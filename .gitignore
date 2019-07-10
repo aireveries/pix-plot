@@ -3,3 +3,4 @@ output/
 .DS_Store
 *.pem
 *.swp
+.mypy_cache

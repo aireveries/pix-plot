@@ -251,6 +251,7 @@ class PixPlot:
       if img in self.errored_images:
         continue
       thumb_path = join(self.output_dir, 'thumbs', '32px', img)
+      thumb_path = thumb_path.replace("png", "jpg").replace("jpeg", "jpg")
       with Image.open(thumb_path) as image:
         width, height = image.size
       # Add the image name, x offset, y offset

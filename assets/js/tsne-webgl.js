@@ -64,7 +64,7 @@ var textureLoader = new AjaxTextureLoader();
 
 function getScene() {
   var scene = new THREE.Scene();
-  scene.background = new THREE.Color(0x111111);
+  scene.background = new THREE.Color(0x85f1f7);
   return scene;
 }
 
