@@ -1,5 +1,5 @@
 # Specify base image
-FROM ubuntu:16.04
+FROM nvidia/cuda:10.0-base-ubuntu16.04
 
 # Specify author \ maintainer
 MAINTAINER Douglas Duhaime <douglas.duhaime@gmail.com>
