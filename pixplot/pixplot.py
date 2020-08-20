@@ -4,6 +4,7 @@ from keras.preprocessing.image import save_img, img_to_array, array_to_img
 from os.path import basename, join, exists, dirname, realpath
 from keras.applications.inception_v3 import preprocess_input
 from keras.applications import InceptionV3, imagenet_utils
+from torchvision.models import inception_v3
 from sklearn.metrics import pairwise_distances_argmin_min
 from keras.backend.tensorflow_backend import set_session
 from dateutil.parser import parse as parse_date
@@ -27,6 +28,7 @@ import multiprocessing
 import pkg_resources
 import rasterfairy
 import numpy as np
+import torch
 import datetime
 import operator
 import argparse
@@ -101,6 +103,22 @@ def process_images(**kwargs):
   get_manifest(**kwargs)
   write_images(**kwargs)
   print(' * done!')
+
+def process_model_input(isTensorflow, image):
+  # can change this to a switch to further support other models
+  if isTensorflow:
+    return preprocess_input(image)
+  else:
+    data = image.transpose((2, 0, 1))
+    data = torch.from_numpy(data)
+    data = data.unsqueeze_(0)
+    return data
+
+def makePrediction(isTensorflow, model, im):
+  if isTensorflow:
+    return model.predict(np.expand_dims(im, 0)).squeeze()
+  else:
+    return model(im).detach().numpy().squeeze()
 
 
 def copy_web_assets(**kwargs):
@@ -481,8 +499,15 @@ def vectorize_images(**kwargs):
   print(' * preparing to vectorize {} images'.format(len(kwargs['image_paths'])))
   vector_dir = os.path.join(kwargs['out_dir'], 'image-vectors')
   if not os.path.exists(vector_dir): os.makedirs(vector_dir)
-  base = InceptionV3(include_top=True, weights='imagenet',)
-  model = Model(inputs=base.input, outputs=base.get_layer('avg_pool').output)
+  isTensorflow = kwargs['tensorflow']
+  if isTensorflow:
+    print("Using Tensor")
+    base = InceptionV3(include_top=True, weights='imagenet',)
+    model = Model(inputs=base.input, outputs=base.get_layer('avg_pool').output)
+  else:
+    print("Using Pytorch")
+    base = inception_v3(pretrained=True)
+    model = base.eval()
   print(' * creating image array')
   vecs = []
   for idx, i in enumerate(stream_images(**kwargs)):
@@ -490,11 +515,14 @@ def vectorize_images(**kwargs):
     if os.path.exists(vector_path) and kwargs['use_cache']:
       vec = np.load(vector_path)
     else:
-      im = preprocess_input( img_to_array( i.original.resize((299,299)) ) )
-      vec = model.predict(np.expand_dims(im, 0)).squeeze()
+      # processes the input according to whether or not using Tensorflow
+      # or pytorch model
+      im = process_model_input(isTensorflow ,img_to_array( i.original.resize((299,299))))
+      vec = makePrediction(isTensorflow, model, im)
       np.save(vector_path, vec)
     vecs.append(vec)
     print(' * vectorized {}/{} images'.format(idx+1, len(kwargs['image_paths'])))
+  print(np.array(vecs))
   return np.array(vecs)
 
 
@@ -1033,6 +1061,7 @@ def parse():
   parser.add_argument('--shuffle', action='store_true', help='shuffle the input images before data processing begins')
   parser.add_argument('--plot_id', type=str, default=config['plot_id'], help='unique id for a plot; useful for resuming processing on a started plot')
   parser.add_argument('--seed', type=int, default=config['seed'], help='seed for random processes')
+  parser.add_argument('--tensorflow', action='store_true',help='uses tensorflow model if included and pytorch otherwise')
   config.update(vars(parser.parse_args()))
   process_images(**config)
 
