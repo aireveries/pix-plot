@@ -104,21 +104,32 @@ def process_images(**kwargs):
   write_images(**kwargs)
   print(' * done!')
 
-def process_model_input(isTensorflow, image):
+def process_tf_model_input(image):
+  return preprocess_input(image)
+
+def process_torch_model_input(image):
   # can change this to a switch to further support other models
-  if isTensorflow:
-    return preprocess_input(image)
-  else:
     data = image.transpose((2, 0, 1))
     data = torch.from_numpy(data)
     data = data.unsqueeze_(0)
     return data
 
-def makePrediction(isTensorflow, model, im):
-  if isTensorflow:
+def make_tf_prediction(model, im):
     return model.predict(np.expand_dims(im, 0)).squeeze()
-  else:
-    return model(im).detach().numpy().squeeze()
+
+def make_torch_prediction(model,im):
+    feature_layer = model._modules.get('avgpool')
+    my_embedding = None
+    def copyFeatures(m, i, o):
+      nonlocal my_embedding
+      my_embedding = o.data
+    # attach the hook 
+    h = feature_layer.register_forward_hook(copyFeatures)
+    model(im)
+    # remove the hook so multiple don't exist at the same time
+    h.remove()
+    return my_embedding.detach().numpy().squeeze()
+
 
 
 def copy_web_assets(**kwargs):
@@ -493,7 +504,6 @@ def get_layouts(**kwargs):
   }
   return layouts
 
-
 def vectorize_images(**kwargs):
   '''Create and return vector representation of Image() instances'''
   print(' * preparing to vectorize {} images'.format(len(kwargs['image_paths'])))
@@ -508,6 +518,7 @@ def vectorize_images(**kwargs):
     print("Using Pytorch")
     base = inception_v3(pretrained=True)
     model = base.eval()
+    # add the hook to the model here
   print(' * creating image array')
   vecs = []
   for idx, i in enumerate(stream_images(**kwargs)):
@@ -517,8 +528,12 @@ def vectorize_images(**kwargs):
     else:
       # processes the input according to whether or not using Tensorflow
       # or pytorch model
-      im = process_model_input(isTensorflow ,img_to_array( i.original.resize((299,299))))
-      vec = makePrediction(isTensorflow, model, im)
+      if isTensorflow:
+        im = process_tf_model_input(img_to_array( i.original.resize((299,299))))
+        vec = make_tf_prediction(model, im)
+      else:
+        im = process_torch_model_input(img_to_array( i.original.resize((299,299))))
+        vec = make_torch_prediction(model, im)
       np.save(vector_path, vec)
     vecs.append(vec)
     print(' * vectorized {}/{} images'.format(idx+1, len(kwargs['image_paths'])))
