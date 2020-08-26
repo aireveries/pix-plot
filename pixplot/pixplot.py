@@ -13,6 +13,7 @@ from keras_preprocessing.image import load_img
 from pointgrid import align_points_to_grid
 from distutils.dir_util import copy_tree
 from sklearn.decomposition import PCA
+from sklearn.cluster import MeanShift
 from scipy.spatial import ConvexHull
 from iiif_downloader import Manifest
 from collections import defaultdict
@@ -922,7 +923,11 @@ def get_hotspots(**kwargs):
     'approx_min_span_tree': False,
   }
   v = kwargs['vecs']
-  z = HDBSCAN(**config).fit(v)
+  useMeanShift = kwargs['mean_shift']
+  if useMeanShift:
+    z = MeanShift(bandwidth=2).fit(v)
+  else:
+    z = HDBSCAN(**config).fit(v)
   # find the points in each cluster
   d = defaultdict(list)
   for idx, i in enumerate(z.labels_):
@@ -1077,6 +1082,7 @@ def parse():
   parser.add_argument('--plot_id', type=str, default=config['plot_id'], help='unique id for a plot; useful for resuming processing on a started plot')
   parser.add_argument('--seed', type=int, default=config['seed'], help='seed for random processes')
   parser.add_argument('--tensorflow', action='store_true',help='uses tensorflow model if included and pytorch otherwise')
+  parser.add_argument('--mean_shift', action='store_true', help='use meanshift for clustering')
   config.update(vars(parser.parse_args()))
   process_images(**config)
 
