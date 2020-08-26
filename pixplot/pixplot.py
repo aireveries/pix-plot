@@ -512,34 +512,42 @@ def vectorize_images(**kwargs):
   if not os.path.exists(vector_dir): os.makedirs(vector_dir)
   isTensorflow = kwargs['tensorflow']
   if isTensorflow:
-    print("Using Tensor")
-    base = InceptionV3(include_top=True, weights='imagenet',)
+    # tensorflow currently processes images 1 by 1
+    # this can be changed by using a dataloader with tensorflow in the future
+    print("Using Tensorflow for feature extraction")
+    base = InceptionV3(include_top=True, weights='imagenet')
     model = Model(inputs=base.input, outputs=base.get_layer('avg_pool').output)
-  else:
-    print("Using Pytorch")
-    base = inception_v3(pretrained=True)
-    model = base.eval()
-    # add the hook to the model here
-  print(' * creating image array')
-  vecs = []
-  for idx, i in enumerate(stream_images(**kwargs)):
-    vector_path = os.path.join(vector_dir, os.path.basename(i.path) + '.npy')
-    if os.path.exists(vector_path) and kwargs['use_cache']:
-      vec = np.load(vector_path)
-    else:
-      # processes the input according to whether or not using Tensorflow
-      # or pytorch model
-      if isTensorflow:
+    print(' * creating image array')
+    vecs = []
+    for idx, i in enumerate(stream_images(**kwargs)):
+      vector_path = os.path.join(vector_dir, os.path.basename(i.path) + '.npy')
+      if os.path.exists(vector_path) and kwargs['use_cache']:
+        vec = np.load(vector_path)
+      else:
         im = process_tf_model_input(img_to_array( i.original.resize((299,299))))
         vec = make_tf_prediction(model, im)
+        np.save(vector_path, vec)
+      vecs.append(vec)
+      print(' * vectorized {}/{} images'.format(idx+1, len(kwargs['image_paths'])))
+    return np.array(vecs)
+  else:
+    print("Using Pytorch for feature extraction")
+    base = inception_v3(pretrained=True)
+    model = base.eval()
+    print(' * creating image array')
+    vecs = []
+    for idx, i in enumerate(stream_images(**kwargs)):
+      vector_path = os.path.join(vector_dir, os.path.basename(i.path) + '.npy')
+      if os.path.exists(vector_path) and kwargs['use_cache']:
+        vec = np.load(vector_path)
       else:
         im = process_torch_model_input(img_to_array( i.original.resize((299,299))))
         vec = make_torch_prediction(model, im)
-      np.save(vector_path, vec)
-    vecs.append(vec)
-    print(' * vectorized {}/{} images'.format(idx+1, len(kwargs['image_paths'])))
-  print(np.array(vecs))
-  return np.array(vecs)
+        np.save(vector_path, vec)
+      vecs.append(vec)
+      print(' * vectorized {}/{} images'.format(idx+1, len(kwargs['image_paths'])))
+    print(np.array(vecs))
+    return np.array(vecs)
 
 
 def get_umap_layout(**kwargs):
