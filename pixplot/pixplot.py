@@ -5,6 +5,7 @@ from os.path import basename, join, exists, dirname, realpath
 from keras.applications.inception_v3 import preprocess_input
 from keras.applications import InceptionV3, imagenet_utils
 from torchvision.models import inception_v3
+from torch.utils.data import DataLoader
 from sklearn.metrics import pairwise_distances_argmin_min
 from keras.backend.tensorflow_backend import set_session
 from dateutil.parser import parse as parse_date
@@ -14,6 +15,7 @@ from pointgrid import align_points_to_grid
 from distutils.dir_util import copy_tree
 from sklearn.decomposition import PCA
 from sklearn.cluster import MeanShift
+from dataset import PixPlotDataset
 from scipy.spatial import ConvexHull
 from iiif_downloader import Manifest
 from collections import defaultdict
@@ -67,7 +69,7 @@ NB: Keras Image class objects return image.size as w,h
 '''
 
 config = {
-  'images': None,
+  'images': "/Users/gavinlifrieri/AIReverie/pix-plot/datasets/oslomini/images/*.jpg",
   'metadata': None,
   'out_dir': 'output',
   'max_images': None,
@@ -534,19 +536,28 @@ def vectorize_images(**kwargs):
     print("Using Pytorch for feature extraction")
     base = inception_v3(pretrained=True)
     model = base.eval()
+    print(' Creating Pytorch Dataset and DataLoader')
+    imagesdataset = PixPlotDataset(root_dir=kwargs['images'])
+    dataloader = DataLoader(imagesdataset, batch_size=4, shuffle=False, num_workers=0)
     print(' * creating image array')
     vecs = []
-    for idx, i in enumerate(stream_images(**kwargs)):
-      vector_path = os.path.join(vector_dir, os.path.basename(i.path) + '.npy')
-      if os.path.exists(vector_path) and kwargs['use_cache']:
-        vec = np.load(vector_path)
-      else:
-        im = process_torch_model_input(img_to_array( i.original.resize((299,299))))
-        vec = make_torch_prediction(model, im)
-        np.save(vector_path, vec)
-      vecs.append(vec)
-      print(' * vectorized {}/{} images'.format(idx+1, len(kwargs['image_paths'])))
-    print(np.array(vecs))
+    for i_batch, curr_batch in enumerate(dataloader):
+      # make a prediction
+      filename_batch = curr_batch['filename']
+      images_batch = curr_batch['data']
+      tensor = make_torch_prediction(model, images_batch)
+      row_index = 0
+      for row in tensor:
+        # gives each individual prediction in the tensor
+        vector_path = os.path.join(vector_dir, os.path.basename(filename_batch[row_index]) + '.npy')
+        if os.path.exists(vector_path) and kwargs['use_cache']:
+          vec = np.load(vector_path)
+        else:
+          vec = row
+          np.save(vector_path,vec)
+        vecs.append(vec)
+        row_index += 1
+      print(' * vectorized {}/{} images'.format( (i_batch+1) * 4, len(kwargs['image_paths'])))
     return np.array(vecs)
 
 
