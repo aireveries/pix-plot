@@ -2,6 +2,8 @@
 *.pyc
 *.swp
 *.pem
+*.swp
+.mypy_cache
 *.ipynb
 *.egg-info
 *.ruby-version

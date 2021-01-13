@@ -4,6 +4,8 @@ from keras.preprocessing.image import save_img, img_to_array, array_to_img
 from os.path import basename, join, exists, dirname, realpath
 from keras.applications.inception_v3 import preprocess_input
 from keras.applications import InceptionV3, imagenet_utils
+from torchvision.models import inception_v3
+from torch.utils.data import DataLoader
 from sklearn.metrics import pairwise_distances_argmin_min
 from keras.backend.tensorflow_backend import set_session
 from collections import defaultdict, namedtuple
@@ -14,6 +16,8 @@ from pointgrid import align_points_to_grid
 from scipy.spatial.distance import cdist
 from distutils.dir_util import copy_tree
 from sklearn.decomposition import PCA
+from sklearn.cluster import MeanShift
+from pixplot.dataset import PixPlotDataset
 from scipy.spatial import ConvexHull
 from iiif_downloader import Manifest
 from rasterfairy import coonswarp
@@ -26,6 +30,7 @@ from umap import UMAP
 import pkg_resources
 import rasterfairy
 import numpy as np
+import torch
 import datetime
 import operator
 import argparse
@@ -82,7 +87,7 @@ NB: Keras Image class objects return image.size as w,h
 '''
 
 config = {
-  'images': None,
+  'images': "/Users/gavinlifrieri/AIReverie/pix-plot/datasets/oslomini/images/*.jpg",
   'metadata': None,
   'out_dir': 'output',
   'max_images': None,
@@ -125,6 +130,33 @@ def process_images(**kwargs):
   get_manifest(**kwargs)
   write_images(**kwargs)
   print(' * done!')
+
+def process_tf_model_input(image):
+  return preprocess_input(image)
+
+def process_torch_model_input(image):
+  # can change this to a switch to further support other models
+    data = image.transpose((2, 0, 1))
+    data = torch.from_numpy(data)
+    data = data.unsqueeze_(0)
+    return data
+
+def make_tf_prediction(model, im):
+    return model.predict(np.expand_dims(im, 0)).squeeze()
+
+def make_torch_prediction(model,im):
+    feature_layer = model._modules.get('avgpool')
+    my_embedding = None
+    def copyFeatures(m, i, o):
+      nonlocal my_embedding
+      my_embedding = o.data
+    # attach the hook 
+    h = feature_layer.register_forward_hook(copyFeatures)
+    model(im)
+    # remove the hook so multiple don't exist at the same time
+    h.remove()
+    return my_embedding.detach().numpy().squeeze()
+
 
 
 def copy_web_assets(**kwargs):
@@ -528,32 +560,64 @@ def get_layouts(**kwargs):
   }
   return layouts
 
-
-def get_inception_vectors(**kwargs):
-  '''Create and return Inception vector representation of Image() instances'''
-  print(' * generating Inception vectors for {} images'.format(len(kwargs['image_paths'])))
-  vector_dir = os.path.join(kwargs['out_dir'], 'image-vectors', 'inception')
+def vectorize_images(**kwargs):
+  '''Create and return vector representation of Image() instances'''
+  print(' * preparing to vectorize {} images'.format(len(kwargs['image_paths'])))
+  vector_dir = os.path.join(kwargs['out_dir'], 'image-vectors')
   if not os.path.exists(vector_dir): os.makedirs(vector_dir)
-  base = InceptionV3(include_top=True, weights='imagenet',)
-  model = Model(inputs=base.input, outputs=base.get_layer('avg_pool').output)
-  print(' * creating image array')
-  vecs = []
-  for idx, i in enumerate(stream_images(**kwargs)):
-    vector_path = os.path.join(vector_dir, os.path.basename(i.path) + '.npy')
-    if os.path.exists(vector_path) and kwargs['use_cache']:
-      vec = np.load(vector_path)
-    else:
-      im = preprocess_input( img_to_array( i.original.resize((299,299)) ) )
-      vec = model.predict(np.expand_dims(im, 0)).squeeze()
-      np.save(vector_path, vec)
-    vecs.append(vec)
-    print(' * vectorized {}/{} images'.format(idx+1, len(kwargs['image_paths'])))
-  return np.array(vecs)
+  isTensorflow = kwargs['tensorflow']
+  if isTensorflow:
+    # tensorflow currently processes images 1 by 1
+    # this can be changed by using a dataloader with tensorflow in the future
+    print("Using Tensorflow for feature extraction")
+    base = InceptionV3(include_top=True, weights='imagenet')
+    model = Model(inputs=base.input, outputs=base.get_layer('avg_pool').output)
+    print(' * creating image array')
+    vecs = []
+    for idx, i in enumerate(stream_images(**kwargs)):
+      vector_path = os.path.join(vector_dir, os.path.basename(i.path) + '.npy')
+      if os.path.exists(vector_path) and kwargs['use_cache']:
+        vec = np.load(vector_path)
+      else:
+        im = process_tf_model_input(img_to_array( i.original.resize((299,299))))
+        vec = make_tf_prediction(model, im)
+        np.save(vector_path, vec)
+      vecs.append(vec)
+      print(' * vectorized {}/{} images'.format(idx+1, len(kwargs['image_paths'])))
+    return np.array(vecs)
+  else:
+    print("Using Pytorch for feature extraction")
+    base = inception_v3(pretrained=True)
+    model = base.eval()
+    print(' Creating Pytorch Dataset and DataLoader')
+    max_images = kwargs.get('max_images', None)
+    imagesdataset = PixPlotDataset(root_dir=kwargs['images'], max_images=max_images)
+    dataloader = DataLoader(imagesdataset, batch_size=4, shuffle=False, num_workers=0)
+    print(' * creating image array')
+    vecs = []
+    for i_batch, curr_batch in enumerate(dataloader):
+      # make a prediction
+      filename_batch = curr_batch['filename']
+      images_batch = curr_batch['data']
+      tensor = make_torch_prediction(model, images_batch)
+      row_index = 0
+      for row in tensor:
+        # gives each individual prediction in the tensor
+        vector_path = os.path.join(vector_dir, os.path.basename(filename_batch[row_index]) + '.npy')
+        if os.path.exists(vector_path) and kwargs['use_cache']:
+          vec = np.load(vector_path)
+        else:
+          vec = row
+          np.save(vector_path,vec)
+        vecs.append(vec)
+        row_index += 1
+      print(' * vectorized {}/{} images'.format( (i_batch+1) * 4, len(kwargs['image_paths'])))
+    return np.array(vecs)
 
 
 def get_umap_layout(**kwargs):
   '''Get the x,y positions of images passed through a umap projection'''
-  vecs = get_inception_vectors(**kwargs)
+  vecs = vectorize_images(**kwargs)
   print(' * creating UMAP layout')
   out_path = get_path('layouts', 'umap', **kwargs)
   if os.path.exists(out_path) and kwargs['use_cache']: return out_path
@@ -1127,6 +1191,10 @@ def get_hotspots(**kwargs):
   z = model.fit(v)
   # create a map from cluster label to image indices in cluster
   d = defaultdict(lambda: defaultdict(list))
+  # TODO: impelemtn MeanShift in get_cluster_model
+  # useMeanShift = kwargs['mean_shift']
+  # if useMeanShift:
+  #   z = MeanShift(bandwidth=2).fit(v)
   for idx, i in enumerate(z.labels_):
     d[i]['images'].append(idx)
   # find the convex hull for each cluster's points
@@ -1302,6 +1370,8 @@ def parse():
   parser.add_argument('--plot_id', type=str, default=config['plot_id'], help='unique id for a plot; useful for resuming processing on a started plot')
   parser.add_argument('--seed', type=int, default=config['seed'], help='seed for random processes')
   parser.add_argument('--n_clusters', type=int, default=config['n_clusters'], help='number of clusters to use when clustering with kmeans')
+  parser.add_argument('--tensorflow', action='store_true',help='uses tensorflow model if included and pytorch otherwise')
+  parser.add_argument('--mean_shift', action='store_true', help='use meanshift for clustering')
   config.update(vars(parser.parse_args()))
   process_images(**config)
 
