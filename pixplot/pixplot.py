@@ -2,6 +2,7 @@ from __future__ import division
 import warnings; warnings.filterwarnings('ignore')
 from torchvision.models import inception_v3
 from torch.utils.data import DataLoader
+from pathlib import Path
 from keras.preprocessing.image import save_img, img_to_array, array_to_img
 from os.path import basename, join, exists, dirname, realpath
 from keras.applications.inception_v3 import preprocess_input
@@ -304,12 +305,16 @@ def stream_images(**kwargs):
 
 def clean_filename(s, **kwargs):
   '''Given a string that points to a filename, return a clean filename'''
-  s = unquote(os.path.basename(s))
-  invalid_chars = '<>:;,"/\\|?*[]'
-  for i in invalid_chars: s = s.replace(i, '')
-  if kwargs.get('extract_poses', False):
-    extension = s.split('.')[-1]
-    s = '-'.join(s.split('-')[:-1]) + '.' + extension
+  # import pdb; pdb.set_trace()
+  # s = unquote(os.path.basename(s))
+  s = unquote(s)
+  # invalid_chars = '<>:;,"/\\|?*[]'
+  # invalid_chars = '<>:;,"/\\|?*[]'
+  # for i in invalid_chars: s = s.replace(i, '')
+  # if kwargs.get('extract_poses', False):
+  #   extension = s.split('.')[-1]
+  #   s = '-'.join(s.split('-')[:-1]) + '.' + extension
+  # return s
   return s
 
 
@@ -1220,7 +1225,8 @@ def get_hotspots(**kwargs):
     d[i]['centroid'] = np.array([np.mean(x), np.mean(y)]).tolist()
     # find the image closest to the centroid
     closest, _ = pairwise_distances_argmin_min(np.array([d[i]['centroid']]), v)
-    d[i]['img'] = os.path.basename(kwargs['image_paths'][closest[0]])
+    # d[i]['img'] = os.path.basename(kwargs['image_paths'][closest[0]])
+    d[i]['img'] = kwargs['image_paths'][closest[0]]
   # remove massive clusters
   deletable = []
   for i in d:
@@ -1287,16 +1293,19 @@ def write_images(**kwargs):
   '''Write all originals and thumbs to the output dir'''
   for i in stream_images(**kwargs):
     filename = clean_filename(i.path)
-    # copy original for lightbox
-    out_dir = join(kwargs['out_dir'], 'originals')
-    if not exists(out_dir): os.makedirs(out_dir)
-    out_path = join(out_dir, filename)
-    if not os.path.exists(out_path):
-      shutil.copy(i.path, out_path)
+    # # copy original for lightbox
+    # out_dir = join(kwargs['out_dir'], 'originals')
+    # if not exists(out_dir): os.makedirs(out_dir)
+    # out_path = join(out_dir, filename)
+    # if not os.path.exists(out_path):
+    #   shutil.copy(i.path, out_path)
+
     # copy thumb for lod texture
     out_dir = join(kwargs['out_dir'], 'thumbs')
-    if not exists(out_dir): os.makedirs(out_dir)
-    out_path = join(out_dir, filename)
+    # if not exists(out_dir): os.makedirs(out_dir)
+    # out_path = join(out_dir, filename)
+    out_path = Path(out_dir) / filename
+    out_path.parent.mkdir(parents=True, exist_ok=True)
     img = array_to_img(i.resize_to_max(kwargs['lod_cell_height']))
     save_img(out_path, img)
 

@@ -45,6 +45,7 @@ function Config() {
     dir: 'data',
     file: 'manifest.json',
     gzipped: false,
+    s3Proxy: 'http://localhost:3001/get?src='
   }
   this.size = {
     cell: 32, // height of each cell in atlas
@@ -2503,9 +2504,10 @@ Modal.prototype.showCells = function(cellIndices, cellIdx) {
   // parse data attributes
   var filename = data.json.images[self.cellIndices[self.cellIdx]];
   // conditionalize the path to the image
-  var src = data.json.images_cropped
-    ? config.data.dir + '/uncropped/' + trimFilenameSuffix(filename)
-    : config.data.dir + '/originals/' + filename;
+  // var src = data.json.images_cropped
+  //   ? config.data.dir + '/uncropped/' + trimFilenameSuffix(filename)
+  //   : config.data.dir + '/originals/' + filename;
+  var src = config.data.s3Proxy + filename;
   // define function to show the modal
   function showModal(json) {
     var json = json || {};
