@@ -1,11 +1,11 @@
 from __future__ import division
 import warnings; warnings.filterwarnings('ignore')
+from torchvision.models import inception_v3
+from torch.utils.data import DataLoader
 from keras.preprocessing.image import save_img, img_to_array, array_to_img
 from os.path import basename, join, exists, dirname, realpath
 from keras.applications.inception_v3 import preprocess_input
 from keras.applications import InceptionV3, imagenet_utils
-from torchvision.models import inception_v3
-from torch.utils.data import DataLoader
 from sklearn.metrics import pairwise_distances_argmin_min
 from keras.backend.tensorflow_backend import set_session
 from collections import defaultdict, namedtuple
@@ -17,7 +17,7 @@ from scipy.spatial.distance import cdist
 from distutils.dir_util import copy_tree
 from sklearn.decomposition import PCA
 from sklearn.cluster import MeanShift
-from pixplot.dataset import PixPlotDataset
+from dataset import PixPlotDataset
 from scipy.spatial import ConvexHull
 from iiif_downloader import Manifest
 from rasterfairy import coonswarp
@@ -155,7 +155,10 @@ def make_torch_prediction(model,im):
     model(im)
     # remove the hook so multiple don't exist at the same time
     h.remove()
-    return my_embedding.detach().numpy().squeeze()
+    if torch.cuda.is_available():
+      return my_embedding.detach().cpu().numpy().squeeze()    
+    else:
+      return my_embedding.detach().numpy().squeeze()
 
 
 
@@ -588,17 +591,22 @@ def vectorize_images(**kwargs):
   else:
     print("Using Pytorch for feature extraction")
     base = inception_v3(pretrained=True)
+    if torch.cuda.is_available():
+        base.to('cuda')
     model = base.eval()
     print(' Creating Pytorch Dataset and DataLoader')
     max_images = kwargs.get('max_images', None)
     imagesdataset = PixPlotDataset(root_dir=kwargs['images'], max_images=max_images)
-    dataloader = DataLoader(imagesdataset, batch_size=4, shuffle=False, num_workers=0)
+    batch_size = 32
+    dataloader = DataLoader(imagesdataset, batch_size=batch_size, shuffle=False, num_workers=4)
     print(' * creating image array')
     vecs = []
     for i_batch, curr_batch in enumerate(dataloader):
       # make a prediction
       filename_batch = curr_batch['filename']
       images_batch = curr_batch['data']
+      if torch.cuda.is_available():
+        images_batch = images_batch.cuda()
       tensor = make_torch_prediction(model, images_batch)
       row_index = 0
       for row in tensor:
@@ -611,7 +619,7 @@ def vectorize_images(**kwargs):
           np.save(vector_path,vec)
         vecs.append(vec)
         row_index += 1
-      print(' * vectorized {}/{} images'.format( (i_batch+1) * 4, len(kwargs['image_paths'])))
+      print(' * vectorized {}/{} images'.format( (i_batch+1) * batch_size, len(kwargs['image_paths'])))
     return np.array(vecs)
 
 
