@@ -3,6 +3,8 @@ import warnings; warnings.filterwarnings('ignore')
 from torchvision.models import inception_v3
 from torch.utils.data import DataLoader
 from pathlib import Path
+from tqdm import tqdm
+
 from keras.preprocessing.image import save_img, img_to_array, array_to_img
 from os.path import basename, join, exists, dirname, realpath
 from keras.applications.inception_v3 import preprocess_input
@@ -188,7 +190,7 @@ def filter_images(**kwargs):
   # validate that input image names are unique
   image_paths = set()
   duplicates = set()
-  for i in stream_images(image_paths=get_image_paths(**kwargs)):
+  for i in tqdm(stream_images(image_paths=get_image_paths(**kwargs)), 'finding images'):
     if i.path in image_paths:
       duplicates.add(i.path)
     image_paths.add(i.path)
@@ -276,11 +278,16 @@ def get_image_paths(**kwargs):
         image_paths = sorted(glob2.glob(os.path.join('iiif-downloads', 'images', '*')))
   # handle case where images flag points to a glob of images
   if not image_paths:
-    image_paths = sorted(glob2.glob(kwargs['images']))
+    temp_image_paths = sorted(glob2.glob(kwargs['images']))
+    image_paths = []
+    for path in temp_image_paths:
+      if path.endswith('.jpg') or path.endswith('.jpeg') or path.endswith('.png'):
+        image_paths.append(path)
   # handle case user provided no images
   if not image_paths:
     print('\nError: No input images were found. Please check your --images glob\n')
     sys.exit()
+
   # optionally shuffle the image_paths
   if kwargs['shuffle']:
     print(' * shuffling input images')
@@ -305,7 +312,6 @@ def stream_images(**kwargs):
 
 def clean_filename(s, **kwargs):
   '''Given a string that points to a filename, return a clean filename'''
-  # import pdb; pdb.set_trace()
   # s = unquote(os.path.basename(s))
   s = unquote(s)
   # invalid_chars = '<>:;,"/\\|?*[]'
@@ -494,7 +500,7 @@ def get_atlas_data(**kwargs):
   y = 0 # y pos in atlas
   positions = [] # l[cell_idx] = atlas data
   atlas = np.zeros((kwargs['atlas_size'], kwargs['atlas_size'], 3))
-  for idx, i in enumerate(stream_images(**kwargs)):
+  for idx, i in enumerate(tqdm(stream_images(**kwargs), 'processing for atlas')):
     if kwargs['square_cells']:
       cell_data = i.resize_to_square(kwargs['cell_size'])
     else:
@@ -582,14 +588,15 @@ def vectorize_images(**kwargs):
     model = Model(inputs=base.input, outputs=base.get_layer('avg_pool').output)
     print(' * creating image array')
     vecs = []
-    for idx, i in enumerate(stream_images(**kwargs)):
+    for idx, i in enumerate(tqdm(stream_images(**kwargs), 'vectorizing images')):
       vector_path = os.path.join(vector_dir, os.path.basename(i.path) + '.npy')
       if os.path.exists(vector_path) and kwargs['use_cache']:
         vec = np.load(vector_path)
       else:
         im = process_tf_model_input(img_to_array( i.original.resize((299,299))))
         vec = make_tf_prediction(model, im)
-        np.save(vector_path, vec)
+        # TODO: save vectors to feature database
+        # np.save(vector_path, vec)
       vecs.append(vec)
       print(' * vectorized {}/{} images'.format(idx+1, len(kwargs['image_paths'])))
     return np.array(vecs)
@@ -606,7 +613,7 @@ def vectorize_images(**kwargs):
     dataloader = DataLoader(imagesdataset, batch_size=batch_size, shuffle=False, num_workers=4)
     print(' * creating image array')
     vecs = []
-    for i_batch, curr_batch in enumerate(dataloader):
+    for i_batch, curr_batch in enumerate(tqdm(dataloader, 'vectorizing images')):
       # make a prediction
       filename_batch = curr_batch['filename']
       images_batch = curr_batch['data']
@@ -621,7 +628,8 @@ def vectorize_images(**kwargs):
           vec = np.load(vector_path)
         else:
           vec = row
-          np.save(vector_path,vec)
+          # TODO: save vectors to feature database
+          # np.save(vector_path,vec)
         vecs.append(vec)
         row_index += 1
       print(' * vectorized {}/{} images'.format( (i_batch+1) * batch_size, len(kwargs['image_paths'])))
@@ -1390,6 +1398,10 @@ def parse():
   parser.add_argument('--tensorflow', action='store_true',help='uses tensorflow model if included and pytorch otherwise')
   parser.add_argument('--mean_shift', action='store_true', help='use meanshift for clustering')
   config.update(vars(parser.parse_args()))
+
+  if config['images'].startswith('s3://'):
+    config['images'] = config['images'][5:]
+
   process_images(**config)
 
 if __name__ == '__main__':

@@ -45,7 +45,8 @@ function Config() {
     dir: 'data',
     file: 'manifest.json',
     gzipped: false,
-    s3Proxy: 'http://localhost:3001/get?src='
+    s3Proxy: 'https://review-thumbnailer.aireverie.xyz/get?src='
+    // s3Proxy: 'http://localhost:3001/get?src='
   }
   this.size = {
     cell: 32, // height of each cell in atlas
