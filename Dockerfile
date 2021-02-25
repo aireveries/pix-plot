@@ -18,7 +18,7 @@ RUN apt-get update && apt-get install -y \
 
 RUN apt install -y software-properties-common
 RUN add-apt-repository -y ppa:deadsnakes/ppa
-RUN apt install -y python3.7
+RUN apt install -y python3.7 python3.7-dev
 RUN rm -rf /var/lib/apt/lists/*
 RUN ln -sv /usr/bin/python3.7 /usr/bin/python
 
@@ -46,3 +46,4 @@ RUN pip install setuptools
 
 COPY . .
 RUN python setup.py install
+RUN pip install pycocotools==2.0.2

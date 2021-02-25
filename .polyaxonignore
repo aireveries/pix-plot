@@ -14,3 +14,4 @@ var
 ./dist
 ./output
 ./datasets
+./aireverie-datasets
