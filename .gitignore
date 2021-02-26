@@ -19,3 +19,5 @@ models
 !pixplot/web/assets/vendor/dist/
 aireverie-datasets
 .vscode
+extracted_objects
+output_objects
