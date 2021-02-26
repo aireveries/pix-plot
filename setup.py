@@ -35,17 +35,17 @@ setup(
     'h5py==2.10.0',
     'iiif-downloader>=0.0.6',
     'Keras<=2.3.0',
-    'numpy>=1.16.0',
     'Pillow>=6.1.0',
     'pointgrid>=0.0.2',
     'python-dateutil>=2.8.0',
-    'scikit-learn==0.21.3',
+    'scikit-learn==0.22',
     'scipy==1.4.0',
     'tensorflow==1.14.0',
-    'umap-learn==0.4.0',
+    'umap-learn==0.5.1',
     'yale-dhlab-rasterfairy>=1.0.3',
     'yale-dhlab-keras-preprocessing>=1.1.1',
-    'matplotlib'
+    'matplotlib',
+    'tqdm'
   ],
   entry_points={
     'console_scripts': [
