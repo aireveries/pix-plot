@@ -6,13 +6,21 @@ This repository contains code that can be used to visualize tens of thousands of
 
 ## Dependencies
 
-To install the Python dependencies, you can run (ideally in a virtual environment):
+To install the Python dependencies, we recommend you [install Anaconda](https://www.anaconda.com/products/individual#Downloads) and then create a conda environment with a Python 3.7 runtime:
 
 ```bash
-pip install pixplot -U
+conda create --name=3.7 python=3.7
+source activate 3.7
 ```
 
-The HTML viewer requires a WebGL-enabled browser.
+Then you can install the dependencies by running:
+
+```bash
+pip uninstall pixplot
+pip install https://github.com/yaledhlab/pix-plot/archive/master.zip
+```
+
+Please note that you will need to use Python 3.6 or Python 3.7 to install and use this package. The HTML viewer also requires a WebGL-enabled browser.
 
 ## Quickstart
 
@@ -95,10 +103,10 @@ pixplot --images "path/to/images/*.jpg" --metadata "path/to/metadata.csv"
 
 Metadata should be in a comma-separated value file, should contain one row for each input image, and should contain headers specifying the column order. Here is a sample metadata file:
 
-| filename | category  | description   | permalink   | Year     |
-| -------- | --------- | ------------- | ----------- | -------- |
-| bees.jpg | yellow    | bees' knees   | https://... | 1776     |
-| cats.jpg | dangerous | cats' pajamas | https://... | 1972     |
+| filename | category  | tags  | description   | permalink   | Year     |
+| -------- | --------- | ----- | ------------- | ----------- | -------- |
+| bees.jpg | yellow    | a\|b\|c | bees' knees   | https://... | 1776     |
+| cats.jpg | dangerous | b\|c\|d | cats' pajamas | https://... | 1972     |
 
 The following column labels are accepted:
 
@@ -106,6 +114,7 @@ The following column labels are accepted:
 | ---------------- | ------------------------------------------------------- |
 | **filename**     | the filename of the image                               |
 | **category**     | a categorical label for the image                       |
+| **tags**         | a pipe-delimited list of categorical tags for the image |
 | **description**  | a plaintext description of the image's contents         |
 | **permalink**    | a link to the image hosted on another domain            |
 | **year**         | a year timestamp for the image (should be an integer)   |
@@ -125,14 +134,26 @@ https://manifests.britishart.yale.edu/manifest/40009
 
 One could then specify these images as input by running `pixplot --images manifest.txt --n_clusters 2`
 
+## Plotting Poses
+
+In addition to the Inception-based image vectors, one can generate Mobilenet-based pose vectors for input images by installing an additional dependency:
+
+```bash
+pip install tf-pose==0.11.0
+```
+
+Then, when building a plot, one can pass the `--extract_poses` flag to the pixplot call:
+
+```bash
+pixplot --images "datasets/oslo/*.jpg" --extract_poses
+```
+
 ## Demonstrations (Developed with PixPlot 2.0 codebase)
 
 | Link | Image Count | Collection Info | Browse Images | Download for PixPlot
 | ---------- | -------- | --------------- | ------------ | ------------ |
 | [NewsPlot: 1910-1912](http://pixplot.yale.edu/v2/loc/) | 24,026 | [George Grantham Bain Collection](https://www.loc.gov/pictures/collection/ggbain/) | [News in the 1910s](https://www.flickr.com/photos/library_of_congress/albums/72157603624867509/with/2163445674/) | [Images](http://pixplot.yale.edu/datasets/bain/photos.tar), [Metadata](http://pixplot.yale.edu/datasets/bain/metadata.csv) |
 | [Bildefelt i Oslo](http://pixplot.yale.edu/v2/oslo/) | 31,097 | [oslobilder](http://oslobilder.no) | [Advanced search, 1860-1924](http://oslobilder.no/search?advanced_search=1&query=&place=&from_year=1860&to_year=1924&id=&name=&title=&owner_filter=&producer=&depicted_person=&material=&technique=&event_desc=) | [Images](http://pixplot.yale.edu/datasets/oslo/photos.tar), [Metadata](http://pixplot.yale.edu/datasets/oslo/metadata.csv) |
-
-
 
 ## Acknowledgements
 

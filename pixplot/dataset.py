@@ -6,13 +6,15 @@ from glob2 import glob
 from PIL import Image
 
 class PixPlotDataset(Dataset):
-    def __init__(self, root_dir):
+    def __init__(self, root_dir, max_images=None):
         """
         Args:
             root_dir (string): Directory with all images
         """
         self.root_dir = root_dir
         self.imagePaths = sorted(glob(root_dir))
+        if max_images:
+            self.imagePaths = self.imagePaths[:max_images]
 
     def __len__(self):
         return len(self.imagePaths)

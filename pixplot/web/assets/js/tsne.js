@@ -34,7 +34,7 @@
 *   atlas: height & width of each small atlas (in px)
 *   texture: height & width of each texture (in px)
 *   lodTexture: height & width of the large (detail) texture
- transition:
+* transitions:
 *   duration: number of seconds each layout transition should take
 *   ease: TweenLite ease config values for transitions
 * atlasesPerTex: number of atlases to include in each texture
@@ -45,6 +45,8 @@ function Config() {
     dir: 'data',
     file: 'manifest.json',
     gzipped: false,
+    s3Proxy: 'https://review-thumbnailer.aireverie.xyz/get?src='
+    // s3Proxy: 'http://localhost:3001/get?src='
   }
   this.size = {
     cell: 32, // height of each cell in atlas
@@ -63,17 +65,18 @@ function Config() {
   }
   this.transitions = {
     duration: 2.0,
-    delay: 0.5,
-  }
-  this.transitions.ease = {
-    value: 1.0 + this.transitions.delay,
-    ease: Power3.easeOut,
+    delay: 0.0,
+    ease: {
+      value: 1,
+    ease: Power1.easeOut,
+    }
   }
   this.pickerMaxZ = 0.4; // max z value of camera to trigger picker modal
   this.atlasesPerTex = (this.size.texture/this.size.atlas)**2;
   this.isLocalhost = window.location.hostname.includes('localhost') ||
     window.location.hostname.includes('127.0.0.1') ||
-    window.location.hostname.includes('0.0.0.0');
+    window.location.hostname.includes('0.0.0.0') ||
+    window.location.hostname.includes('[::]');
 }
 
 /**
@@ -472,18 +475,18 @@ Cell.prototype.setBuffer = function(attr) {
       attrs.offset.array[(idxInDrawCall * 2) + 1] = this.dy;
       return;
 
-    case 'pos0':
+    case 'position':
       // set the cell's translation
-      attrs.pos0.array[(idxInDrawCall * 3)] = this.x;
-      attrs.pos0.array[(idxInDrawCall * 3) + 1] = this.y;
-      attrs.pos0.array[(idxInDrawCall * 3) + 2] = this.z;
+      attrs.position.array[(idxInDrawCall * 3)] = this.x;
+      attrs.position.array[(idxInDrawCall * 3) + 1] = this.y;
+      attrs.position.array[(idxInDrawCall * 3) + 2] = this.z;
       return;
 
-    case 'pos1':
+    case 'targetPosition':
       // set the cell's translation
-      attrs.pos1.array[(idxInDrawCall * 3)] = this.tx;
-      attrs.pos1.array[(idxInDrawCall * 3) + 1] = this.ty;
-      attrs.pos1.array[(idxInDrawCall * 3) + 2] = this.tz;
+      attrs.targetPosition.array[(idxInDrawCall * 3)] = this.tx;
+      attrs.targetPosition.array[(idxInDrawCall * 3) + 1] = this.ty;
+      attrs.targetPosition.array[(idxInDrawCall * 3) + 2] = this.tz;
       return;
   }
 }
@@ -514,10 +517,11 @@ Layout.prototype.init = function(options) {
   this.selected = data.json.initial_layout || Object.keys(options)[0];
   this.elems = {
     input: document.querySelector('#jitter-input'),
-    container: document.querySelector('#jitter-container'),
+    jitter: document.querySelector('#jitter-container'),
     icons: document.querySelector('#icons'),
     layoutCategorical: document.querySelector('#layout-categorical'),
     layoutDate: document.querySelector('#layout-date'),
+    layoutPose: document.querySelector('#layout-pose'),
   }
   this.showHideIcons();
   this.addEventListeners();
@@ -533,11 +537,14 @@ Layout.prototype.showHideIcons = function() {
   if (data.layouts.date) {
     this.elems.layoutDate.style.display = 'inline-block';
   }
+  if (data.layouts.pose) {
+    this.elems.layoutPose.style.display = 'inline-block';
+  }
 }
 
 Layout.prototype.selectActiveIcon = function() {
   // remove the active class from all icons
-  var icons = this.elems.icons.querySelectorAll('img');
+  var icons = this.elems.icons.querySelectorAll('.layout-icon');
   for (var i=0; i<icons.length; i++) {
     icons[i].classList.remove('active');
   }
@@ -556,14 +563,14 @@ Layout.prototype.addEventListeners = function() {
     this.set(e.target.id.replace('layout-', ''), true);
   }.bind(this));
   // allow clicks on jitter container to update jitter state
-  this.elems.container.addEventListener('click', function(e) {
+  this.elems.jitter.addEventListener('click', function(e) {
     if (e.target.tagName != 'INPUT') {
       if (this.elems.input.checked) {
         this.elems.input.checked = false;
-        this.elems.container.classList.remove('visible');
+        this.elems.jitter.classList.remove('visible');
       } else {
         this.elems.input.checked = true;
-        this.elems.container.classList.add('visible');
+        this.elems.jitter.classList.add('visible');
       }
     }
     this.set(this.selected, false);
@@ -587,7 +594,7 @@ Layout.prototype.set = function(layout, enableDelay) {
   // add any labels to the plot
   this.setText();
   // zoom the user out if they're zoomed in
-  var delay = this.recenterCamera(enableDelay);
+  var delay = world.recenterCamera(enableDelay);
   // enable the jitter button if this layout has a jittered option
   var jitter = this.showHideJitter();
   // determine the path to the json to display
@@ -604,40 +611,50 @@ Layout.prototype.set = function(layout, enableDelay) {
         data.cells[i].tx = pos[i][0];
         data.cells[i].ty = pos[i][1];
         data.cells[i].tz = pos[i][2] || data.cells[i].getZ(pos[i][0], pos[i][1]);
-        data.cells[i].setBuffer('pos1');
+        data.cells[i].setBuffer('targetPosition');
       }
-      // update the transition uniforms and pos1 buffers on each mesh
+      // set the target locations of lines
+      if (lines.mesh) {
+        var lineAttributes = lines.getAttributes('targetPosition');
+        lines.mesh.geometry.attributes.targetPosition.array = lineAttributes.positions.array.slice(0);
+        lines.mesh.geometry.attributes.targetPosition.needsUpdate = true;
+        lines.mesh.geometry.attributes.targetMidpoint.array = lineAttributes.midpoints.array;
+        lines.mesh.geometry.attributes.targetMidpoint.needsUpdate = true;
+        // begin accumulating a list of elements to animate
+        var animatable = [lines.mesh.material.uniforms.transitionPercent];
+      } else {
+        var animatable = [];
+      }
+      // update the transition uniforms and targetPosition buffers on each mesh
       for (var i=0; i<world.group.children.length; i++) {
-        world.group.children[i].geometry.attributes.pos1.needsUpdate = true;
-        TweenLite.to(world.group.children[i].material.uniforms.transitionPercent,
-          config.transitions.duration, config.transitions.ease);
+        world.group.children[i].geometry.attributes.targetPosition.needsUpdate = true;
+        animatable.push(world.group.children[i].material.uniforms.transitionPercent);
       }
+      // begin the animation
+      TweenMax.to(
+        animatable,
+        config.transitions.duration,
+        config.transitions.ease,
+      );
       // prepare to update all the cell buffers once transition completes
       setTimeout(this.onTransitionComplete.bind(this), config.transitions.duration * 1000);
     }.bind(this))
   }.bind(this), delay);
 }
 
-// return the camera to its starting position
-Layout.prototype.recenterCamera = function(enableDelay) {
-  var initialCameraPosition = world.getInitialLocation();
-  if ((world.camera.position.z < initialCameraPosition.z) && enableDelay) {
-    world.flyTo(initialCameraPosition);
-    return config.transitions.duration * 1000;
-  }
-  return 0;
-}
-
 // set the point size as a function of the current layout
 Layout.prototype.setPointScalar = function() {
   var size = false, // size for points
       l = this.selected; // selected layout
-  if (l == 'tsne' || l == 'umap') size = config.size.points.scatter;
-  if (l == 'grid' || l == 'rasterfairy') size = config.size.points.grid;
+  if (l == 'tsne' || l == 'umap' || l == 'pose') size = config.size.points.scatter;
+  if (l == 'alphabetic' || l == 'grid') size = config.size.points.grid;
+  if (l == 'categorical') size = config.size.points.categorical;
   if (l == 'date') size = config.size.points.date;
   if (size) {
     world.elems.pointSize.value = size;
-    world.setUniform('scaleTarget', world.getPointScale());
+    var scale = world.getPointScale();
+    world.setUniform('targetScale', scale);
+    if (lines.mesh) lines.mesh.material.uniforms.targetScale.value = scale;
   }
 }
 
@@ -646,9 +663,9 @@ Layout.prototype.showHideJitter = function() {
   var jitterable = 'jittered' in data.layouts[this.selected];
   jitterable
     ? world.state.transitioning
-      ? this.elems.container.classList.add('visible', 'disabled')
-      : this.elems.container.classList.add('visible')
-    : this.elems.container.classList.remove('visible')
+      ? this.elems.jitter.classList.add('visible', 'disabled')
+      : this.elems.jitter.classList.add('visible')
+    : this.elems.jitter.classList.remove('visible')
   return jitterable && this.elems.input.checked;
 }
 
@@ -667,7 +684,7 @@ Layout.prototype.setText = function() {
 // reset cell state, mesh buffers, and transition uniforms
 Layout.prototype.onTransitionComplete = function() {
   // re-enable interactions with the jitter button
-  this.elems.container.classList.remove('disabled');
+  this.elems.jitter.classList.remove('disabled');
   // show/hide the hotspots
   data.hotspots.showHide();
   // update the state and buffers for each cell
@@ -675,17 +692,25 @@ Layout.prototype.onTransitionComplete = function() {
     cell.x = cell.tx;
     cell.y = cell.ty;
     cell.z = cell.tz;
-    cell.setBuffer('pos0');
+    cell.setBuffer('position');
   });
-  // pass each updated pos0 buffer to the gpu
+  // update the buffers for the lines
+  if (lines.mesh) {
+    lines.mesh.geometry.attributes.position.array = lines.mesh.geometry.attributes.targetPosition.array.slice(0);
+    lines.mesh.geometry.attributes.midpoint.array = lines.mesh.geometry.attributes.targetMidpoint.array.slice(0);
+    lines.mesh.geometry.attributes.position.needsUpdate = true;
+    lines.mesh.geometry.attributes.midpoint.needsUpdate = true;
+    lines.mesh.material.uniforms.transitionPercent = {type: 'f', value: 0};
+  }
+  // pass each updated position buffer to the gpu
   for (var i=0; i<world.group.children.length; i++) {
-    world.group.children[i].geometry.attributes.pos0.needsUpdate = true;
-    world.group.children[i].material.uniforms.transitionPercent = { type: 'f', value: 0 };
+    world.group.children[i].geometry.attributes.position.needsUpdate = true;
+    world.group.children[i].material.uniforms.transitionPercent = {type: 'f', value: 0};
   }
   // indicate the world is no longer transitioning
   world.state.transitioning = false;
   // set the current point scale value
-  world.setUniform('scale', world.getPointScale());
+  world.setScaleUniforms();
   // reindex cells in LOD given new positions
   lod.indexCells();
 }
@@ -712,6 +737,8 @@ function World() {
   this.controls = this.getControls();
   this.stats = this.getStats();
   this.color = new THREE.Color();
+  this.clock = new THREE.Clock();
+  this.time = 0;
   this.center = {};
   this.group = {};
   this.state = {
@@ -842,18 +869,15 @@ World.prototype.handleResize = function() {
   this.renderer.setSize(w, h, false);
   this.controls.handleResize();
   picker.tex.setSize(w, h);
-  this.setPointScalar();
+  this.setScaleUniforms();
 }
 
-/**
-* Set the point size scalar as a uniform on all meshes
-**/
-
-World.prototype.setPointScalar = function() {
-  // handle case of drag before scene renders
+World.prototype.setScaleUniforms = function() {
+    // handle case of drag before scene renders
   if (!this.state.displayed) return;
-  // update the displayed and selector meshes
-  this.setUniform('scale', this.getPointScale())
+  var scale = world.getPointScale();
+  world.setUniform('scale', scale);
+  if (lines.mesh) lines.mesh.material.uniforms.scale.value = scale;
 }
 
 /**
@@ -861,8 +885,8 @@ World.prototype.setPointScalar = function() {
 **/
 
 World.prototype.addScalarChangeListener = function() {
-  this.elems.pointSize.addEventListener('change', this.setPointScalar.bind(this));
-  this.elems.pointSize.addEventListener('input', this.setPointScalar.bind(this));
+  this.elems.pointSize.addEventListener('change', this.setScaleUniforms.bind(this));
+  this.elems.pointSize.addEventListener('input', this.setScaleUniforms.bind(this));
 }
 
 /**
@@ -913,10 +937,24 @@ World.prototype.setCenter = function() {
 }
 
 /**
+* Recenter the camera
+**/
+
+// return the camera to its starting position
+World.prototype.recenterCamera = function(enableDelay) {
+  var initialCameraPosition = this.getInitialLocation();
+  if ((this.camera.position.z < initialCameraPosition.z) && enableDelay) {
+    this.flyTo(initialCameraPosition);
+    return config.transitions.duration * 1000;
+  }
+  return 0;
+}
+
+/**
 * Draw each of the vertices
 **/
 
-World.prototype.plot = function() {
+World.prototype.plotPoints = function() {
   // add the cells for each draw call
   var drawCallToCells = this.getDrawCallToCells();
   this.group = new THREE.Group();
@@ -924,14 +962,15 @@ World.prototype.plot = function() {
     var meshCells = drawCallToCells[drawCallIdx],
         attrs = this.getGroupAttributes(meshCells),
         geometry = new THREE.BufferGeometry();
-    geometry.setAttribute('pos0', attrs.pos0);
-    geometry.setAttribute('pos1', attrs.pos1);
+    geometry.setAttribute('position', attrs.position);
+    geometry.setAttribute('targetPosition', attrs.targetPosition);
     geometry.setAttribute('color', attrs.color);
     geometry.setAttribute('width', attrs.width);
     geometry.setAttribute('height', attrs.height);
     geometry.setAttribute('offset', attrs.offset);
     geometry.setAttribute('opacity', attrs.opacity);
     geometry.setAttribute('selected', attrs.selected);
+    geometry.setAttribute('clusterSelected', attrs.clusterSelected);
     geometry.setAttribute('textureIndex', attrs.textureIndex);
     geometry.setDrawRange(0, meshCells.length); // points not rendered unless draw range is specified
     var material = this.getShaderMaterial({
@@ -972,17 +1011,18 @@ World.prototype.getGroupAttributes = function(cells) {
     var cell = cells[i];
     var rgb = this.color.setHex(cells[i].idx + 1); // use 1-based ids for colors
     it.texIndex[it.texIndexIterator++] = cell.texIdx; // index of texture among all textures -1 means LOD texture
-    it.pos0[it.pos0Iterator++] = cell.x; // current position.x
-    it.pos0[it.pos0Iterator++] = cell.y; // current position.y
-    it.pos0[it.pos0Iterator++] = cell.z; // current position.z
-    it.pos1[it.pos1Iterator++] = cell.tx; // target position.x
-    it.pos1[it.pos1Iterator++] = cell.ty; // target position.y
-    it.pos1[it.pos1Iterator++] = cell.tz; // target position.z
+    it.position[it.positionIterator++] = cell.x; // current position.x
+    it.position[it.positionIterator++] = cell.y; // current position.y
+    it.position[it.positionIterator++] = cell.z; // current position.z
+    it.targetPosition[it.targetPositionIterator++] = cell.tx; // target position.x
+    it.targetPosition[it.targetPositionIterator++] = cell.ty; // target position.y
+    it.targetPosition[it.targetPositionIterator++] = cell.tz; // target position.z
     it.color[it.colorIterator++] = rgb.r; // could be single float
     it.color[it.colorIterator++] = rgb.g; // unique color for GPU picking
     it.color[it.colorIterator++] = rgb.b; // unique color for GPU picking
     it.opacity[it.opacityIterator++] = 1.0; // cell opacity value
     it.selected[it.selectedIterator++] = 0.0; // 1.0 if cell is selected, else 0.0
+    it.clusterSelected[it.clusterSelectedIterator++] = 0.0; // 1.0 if cell's cluster is selected, else 0.0
     it.width[it.widthIterator++] = cell.w; // px width of cell in lod atlas
     it.height[it.heightIterator++] = cell.h; // px height of cell in lod atlas
     it.offset[it.offsetIterator++] = cell.dx; // px offset of cell from left of tex
@@ -990,31 +1030,34 @@ World.prototype.getGroupAttributes = function(cells) {
   }
 
   // format the arrays into THREE attributes
-  var pos0 = new THREE.BufferAttribute(it.pos0, 3, true, 1),
-      pos1 = new THREE.BufferAttribute(it.pos1, 3, true, 1),
+  var position = new THREE.BufferAttribute(it.position, 3, true, 1),
+      targetPosition = new THREE.BufferAttribute(it.targetPosition, 3, true, 1),
       color = new THREE.BufferAttribute(it.color, 3, true, 1),
       opacity = new THREE.BufferAttribute(it.opacity, 1, true, 1),
       selected = new THREE.Uint8BufferAttribute(it.selected, 1, false, 1),
+      clusterSelected = new THREE.Uint8BufferAttribute(it.clusterSelected, 1, false, 1),
       texIndex = new THREE.Int8BufferAttribute(it.texIndex, 1, false, 1),
       width = new THREE.Uint8BufferAttribute(it.width, 1, false, 1),
       height = new THREE.Uint8BufferAttribute(it.height, 1, false, 1),
       offset = new THREE.Uint16BufferAttribute(it.offset, 2, false, 1);
   texIndex.usage = THREE.DynamicDrawUsage;
-  pos0.usage = THREE.DynamicDrawUsage;
-  pos1.usage = THREE.DynamicDrawUsage;
+  position.usage = THREE.DynamicDrawUsage;
+  targetPosition.usage = THREE.DynamicDrawUsage;
   opacity.usage = THREE.DynamicDrawUsage;
   selected.usage = THREE.DynamicDrawUsage;
+  clusterSelected.usage = THREE.DynamicDrawUsage;
   offset.usage = THREE.DynamicDrawUsage;
   var texIndices = this.getTexIndices(cells);
   return {
-    pos0: pos0,
-    pos1: pos1,
+    position: position,
+    targetPosition: targetPosition,
     color: color,
     width: width,
     height: height,
     offset: offset,
     opacity: opacity,
     selected: selected,
+    clusterSelected: clusterSelected,
     textureIndex: texIndex,
     textures: this.getTextures({
       startIdx: texIndices.first,
@@ -1031,23 +1074,25 @@ World.prototype.getGroupAttributes = function(cells) {
 
 World.prototype.getCellIterators = function(n) {
   return {
-    pos0: new Float32Array(n * 3),
-    pos1: new Float32Array(n * 3),
+    position: new Float32Array(n * 3),
+    targetPosition: new Float32Array(n * 3),
     color: new Float32Array(n * 3),
     width: new Uint8Array(n),
     height: new Uint8Array(n),
     offset: new Uint16Array(n * 2),
     opacity: new Float32Array(n),
     selected: new Uint8Array(n),
+    clusterSelected: new Uint8Array(n),
     texIndex: new Int8Array(n),
-    pos0Iterator: 0,
-    pos1Iterator: 0,
+    positionIterator: 0,
+    targetPositionIterator: 0,
     colorIterator: 0,
     widthIterator: 0,
     heightIterator: 0,
     offsetIterator: 0,
     opacityIterator: 0,
     selectedIterator: 0,
+    clusterSelectedIterator: 0,
     texIndexIterator: 0,
   }
 }
@@ -1139,7 +1184,7 @@ World.prototype.getShaderMaterial = function(obj) {
         type: 'f',
         value: this.getPointScale(),
       },
-      scaleTarget: {
+      targetScale: {
         type: 'f',
         value: this.getPointScale(),
       },
@@ -1171,10 +1216,14 @@ World.prototype.getShaderMaterial = function(obj) {
         type: 'vec3',
         value: new Float32Array([234/255, 183/255, 85/255]),
       },
-      delay: {
+      display: {
         type: 'f',
-        value: config.transitions.delay,
-      }
+        value: 1.0,
+      },
+      time: {
+        type: 'f',
+        value: 0.0,
+      },
     },
     vertexShader: vertex,
     fragmentShader: fragment,
@@ -1201,6 +1250,23 @@ World.prototype.setBuffer = function(key, arr) {
 }
 
 /**
+* Helpers that mutate entire buffers
+**/
+
+World.prototype.setBorderedImages = function(indices) {
+  var vals = new Uint8Array(data.cells.length);
+  for (var i=0; i<indices.length; i++) vals[indices[i]] = 1;
+  this.setBuffer('selected', vals);
+}
+
+World.prototype.setOpaqueImages = function(indices) {
+  var vals = new Float32Array(data.cells.length);
+  for (var i=0; i<vals.length; i++) vals[i] = 0.35;
+  for (var i=0; i<indices.length; i++) vals[indices[i]] = 1;
+  this.setBuffer('opacity', vals);
+}
+
+/**
 * Return the color fragment shader or prepare and return
 * the texture fragment shader.
 *
@@ -1217,7 +1283,7 @@ World.prototype.getFragmentShader = function(obj) {
       firstTex = obj.firstTex,
       textures = obj.textures,
       fragShader = document.querySelector('#fragment-shader').textContent;
-  // the calling agent requested the color shader, used for selecting
+  // return shader for selecing clicked images (colorizes cells distinctly)
   if (useColor) {
     fragShader = fragShader.replace('uniform sampler2D textures[N_TEXTURES];', '');
     fragShader = fragShader.replace('TEXTURE_LOOKUP_TREE', '');
@@ -1368,6 +1434,9 @@ World.prototype.render = function() {
   lod.update();
   // update the dragged lasso
   lasso.update();
+  // update the time uniform
+  this.time += this.clock.getDelta() / 10;
+  this.setUniform('time', this.time);
 }
 
 /**
@@ -1380,8 +1449,10 @@ World.prototype.init = function() {
   var loc = this.getInitialLocation();
   this.camera.position.set(loc.x, loc.y, loc.z);
   this.camera.lookAt(loc.x, loc.y, loc.z);
-  // draw the points and start the render loop
-  this.plot();
+  // draw points and start the render loop
+  this.plotPoints();
+  // draw lines
+  lines.plot();
   //resize the canvas and scale rendered assets
   this.handleResize();
   // initialize the first frame
@@ -1583,9 +1654,7 @@ Lasso.prototype.addModalEventListeners = function() {
   }
 
   // let users trigger the download
-  this.elems.downloadLink.addEventListener('click', function(e) {
-    this.downloadSelected();
-  }.bind(this))
+  this.elems.downloadLink.addEventListener('click', this.downloadSelected.bind(this))
 
   // allow users to clear the selected images
   this.elems.xIcon.addEventListener('click', this.clear.bind(this))
@@ -1612,7 +1681,7 @@ Lasso.prototype.setFrozen = function(bool) {
 }
 
 Lasso.prototype.clear = function() {
-  this.setBorderedImages([]);
+  world.setBorderedImages([]);
   this.removeMesh();
   this.elems.viewSelectedContainer.style.display = 'none';
   data.hotspots.setCreateHotspotVisibility(false);
@@ -1624,19 +1693,13 @@ Lasso.prototype.removeMesh = function() {
   if (this.mesh) world.scene.remove(this.mesh);
 }
 
-Lasso.prototype.setBorderedImages = function(indices) {
-  var vals = new Uint8Array(data.cells.length);
-  for (var i=0; i<indices.length; i++) vals[indices[i]] = 1;
-  world.setBuffer('selected', vals);
-}
-
 Lasso.prototype.draw = function() {
   if (this.points.length <4) return;
   this.points = this.getHull();
   // remove the old mesh
   this.removeMesh();
   // get the indices of images that are inside the polygon
-  this.selected = this.getSelected();
+  this.selected = this.getSelectedMap();
   var indices = [],
       keys = Object.keys(this.selected);
   for (var i=0; i<keys.length; i++) {
@@ -1656,7 +1719,7 @@ Lasso.prototype.draw = function() {
   // indicate the number of cells that are selected
   this.setNSelected(indices.length);
   // illuminate the points that are inside the polyline
-  this.setBorderedImages(indices);
+  world.setBorderedImages(indices);
   // obtain and store a mesh, then add the mesh to the scene
   this.mesh = this.getMesh();
   world.scene.add( this.mesh );
@@ -1691,18 +1754,17 @@ Lasso.prototype.getMesh = function() {
 
 // get the convex hull of this.points
 Lasso.prototype.getHull = function() {
-  var graham = new ConvexHullGrahamScan();
+  var l = new ConvexHullGrahamScan();
   for (var i=0; i<this.points.length; i++) {
-    graham.addPoint(this.points[i].x, this.points[i].y);
+    l.addPoint(this.points[i].x, this.points[i].y);
   }
-  var hull = graham.getHull();
+  var hull = l.getHull();
   return hull;
 }
 
-Lasso.prototype.downloadSelected = function() {
-  var images = Object.keys(this.selected).filter(function(k) {
-    return this.selected[k]
-  }.bind(this));
+// pass a 2d array of metadata values for selected images to `callback`
+Lasso.prototype.getSelectedMetadata = function(callback) {
+  var images = this.getSelectedFilenames();
   // conditionally fetch the metadata for each selected image
   var rows = [];
   if (data.json.metadata) {
@@ -1722,25 +1784,58 @@ Lasso.prototype.downloadSelected = function() {
               m.permalink,
             ])
           }
-          this.downloadRows(rows);
+          callback(rows);
         }
       }.bind(this));
     }
   } else {
     for (var i=0; i<images.length; i++) rows.push([images[i]]);
-    this.downloadRows(rows);
+    callback(rows);
   }
 }
 
-Lasso.prototype.downloadRows = function(rows) {
+Lasso.prototype.downloadSelected = function() {
+  // format the filename to use for download
   var filetype = this.downloadFiletype;
   var filename = this.elems.downloadInput.value || Date.now().toString();
   if (!filename.endsWith('.' + filetype)) filename += '.' + filetype;
-  downloadFile(rows, filename);
+  // fetch the metadata associated with user-selected images
+  this.getSelectedMetadata(function(arr) {
+    if (filetype == 'csv' || filetype == 'json') downloadFile(arr, filename);
+    else if (filetype == 'zip') {
+      // initialize zip archive with metadata and images subdirectory
+      var zip = new JSZip();
+      zip.file('metadata.csv', Papa.unparse(arr));
+      var subfolder = zip.folder('images');
+      // add the selected images to the zip archive
+      var images = this.getSelectedFilenames();
+      var nAdded = 0;
+      for (var i=0; i<images.length; i++) {
+        var imagePath = getPath('data/originals/' + images[i]);
+        imageToDataUrl(imagePath, function(result) {
+          var imageFilename = result.src.split('originals/')[1];
+          var base64 = result.dataUrl.split(';base64,')[1];
+          subfolder.file(imageFilename, base64, {base64: true});
+          if (++nAdded == images.length) {
+            zip.generateAsync({type: 'blob'}).then(function(blob) {
+              downloadBlob(blob, filename)
+            });
+          }
+        })
+      }
+    }
+  }.bind(this));
+}
+
+// return list of selected filenames; [filename, filename, ...]
+Lasso.prototype.getSelectedFilenames = function() {
+  return Object.keys(this.selected).filter(function(k) {
+    return this.selected[k]
+  }.bind(this));
 }
 
 // return d[filename] = bool indicating selected
-Lasso.prototype.getSelected = function() {
+Lasso.prototype.getSelectedMap = function() {
   var polygon = this.points.map(function(i) {
     return [i.x, i.y]
   });
@@ -1783,10 +1878,12 @@ function ConvexHullGrahamScan() {
 
 ConvexHullGrahamScan.prototype = {
   constructor: ConvexHullGrahamScan,
+
   Point: function (x, y) {
     this.x = x;
     this.y = y;
   },
+
   _findPolarAngle: function (a, b) {
     var ONE_RADIAN = 57.295779513082;
     var deltaX, deltaY;
@@ -1803,6 +1900,7 @@ ConvexHullGrahamScan.prototype = {
     }
     return angle;
   },
+
   addPoint: function (x, y) {
     // check for a new anchor
     var newAnchor =
@@ -2020,7 +2118,9 @@ Dates.prototype.init = function() {
   // add the dates object to the filters for joint filtering
   filters.filters.push(this);
   // function for filtering images
-  this.selectImage = function(image) { return true };
+  this.imageSelected = function(image) {
+    return true;
+  };
   // init
   this.load();
 }
@@ -2041,7 +2141,7 @@ Dates.prototype.load = function() {
       json.dates[k].forEach(function(img) {
         this.state.data[img] = _k;
       }.bind(this))
-      this.selectImage = function(image) {
+      this.imageSelected = function(image) {
         var year = this.state.data[image];
         // if the selected years are the starting domain, select all images
         if (this.state.selected[0] == this.state.min &&
@@ -2169,10 +2269,6 @@ Text.prototype.createMesh = function() {
         type: 'f',
         value: this.getPointScale(),
       },
-      render: {
-        type: 'bool',
-        value: false,
-      },
       texture: {
         type: 't',
         value: this.texture.tex,
@@ -2235,6 +2331,160 @@ Text.prototype.formatText = function(json) {
 }
 
 /**
+* Draw lines to represent poses
+**/
+
+function Lines() {
+  this.elems = {
+    container: document.querySelector('#pose-display-container'),
+    select: document.querySelector('#pose-display-select'),
+  }
+}
+
+Lines.prototype.plot = function() {
+  if (!data.layouts.pose) return;
+  // json is a 3d array [[[x, y, score]]]
+  get(getPath('data/image-vectors/openpose/vectors.json'), function(json) {
+    this.json = json;
+    // draw lines
+    var material = new THREE.RawShaderMaterial({
+      vertexShader: document.querySelector('#line-vertex-shader').textContent,
+      fragmentShader: document.querySelector('#line-fragment-shader').textContent,
+      uniforms: {
+        transitionPercent: {type: 'f', value: 0.0},
+        display: {type: 'f', value: 0.0},
+        scale: {type: 'f', value: 0.0},
+        targetScale: {type: 'f', value: 0.0},
+      },
+    })
+    var geometry = new THREE.BufferGeometry();
+    var attributes = this.getAttributes('position');
+    geometry.setAttribute('position', attributes.positions);
+    geometry.setAttribute('targetPosition', attributes.positions.clone());
+    geometry.setAttribute('midpoint', attributes.midpoints);
+    geometry.setAttribute('targetMidpoint', attributes.midpoints.clone());
+    this.mesh = new THREE.LineSegments(geometry, material);
+    world.scene.add(this.mesh);
+    // make the poses displayable
+    this.elems.container.style.display = 'inline-block';
+    this.elems.select.addEventListener('change', this.toggleLineDisplay.bind(this));
+  }.bind(this))
+}
+
+Lines.prototype.getAttributes = function(vertexType) {
+  var threshold = 0.1, // confidence threshold needed to render vertex
+      positions = [],
+      midpoints = [],
+      positionsIdx = 0,
+      midpointsIdx = 0,
+      pairs = [
+    [10, 9], // right leg
+    [9, 8],
+    [11, 12], // left leg
+    [12, 13],
+    [2, 3], // right arm
+    [3, 4],
+    [5, 6], // left arm
+    [6, 7],
+    [11, 5], // torso
+    [5, 2],
+    [2, 8],
+    [8, 11],
+  ];
+  this.json.forEach(function(body, bodyIdx) {
+    // find the domain of vertices for height normalization
+    var domains = {
+      x: [Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY],
+      y: [Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY],
+      score: [Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY],
+    };
+    // set the domain and sum of x, y, and score for this body
+    body.forEach(function(vert) {
+      if (vert[0] < domains.x[0]) domains.x[0] = vert[0];
+      if (vert[0] > domains.x[1]) domains.x[1] = vert[0];
+      if (vert[1] < domains.y[0]) domains.y[0] = vert[1];
+      if (vert[1] > domains.y[1]) domains.y[1] = vert[1];
+      if (vert[2] < domains.score[0]) domains.score[0] = vert[2];
+      if (vert[2] > domains.score[1]) domains.score[1] = vert[2];
+    });
+    // get midpoint position along each axis
+    var midpoint = {
+      x: (domains.x[0] + domains.x[1])/2,
+      y: 1 - ((domains.y[0] + domains.y[1])/2),
+    };
+    // set the size scalar
+    var scalar = (0.005 / (domains.y[1] - domains.y[0]));
+    // identify the body vertices
+    var vertices = [];
+    body.forEach(function(vert, vertIdx) {
+      var x = vert[0];
+      var y = 1-vert[1];
+      var keys = vertexType == 'position'
+        ? {x: 'x', y: 'y'}
+        : {x: 'tx', y: 'ty'}
+      vertices.push({
+        x: data.cells[bodyIdx][keys.x] + (scalar * (x-midpoint.x)),
+        y: data.cells[bodyIdx][keys.y] + (scalar * (y-midpoint.y)),
+        score: vert[2],
+      })
+    })
+    // find the mean of all vertices in each dimension
+    var sums = {
+      x: 0,
+      y: 0,
+    };
+    vertices.forEach(function(vertex) {
+      if (vertex.score >= threshold) {
+        sums.x += vertex.x;
+        sums.y += vertex.y;
+      }
+    })
+    // determine the number of retained vertices
+    var n = vertices.filter(function(v) { return v.score >= threshold }).length;
+    // add the lines between the vertices
+    for (var i=0; i<pairs.length; i++) {
+      var a = vertices[pairs[i][0]];
+      var b = vertices[pairs[i][1]];
+      if (a.score < threshold || b.score < threshold) continue;
+      positions[positionsIdx++] = a.x;
+      positions[positionsIdx++] = a.y;
+      positions[positionsIdx++] = 0;
+      positions[positionsIdx++] = b.x;
+      positions[positionsIdx++] = b.y;
+      positions[positionsIdx++] = 0;
+      // todo: reconfigure body as instanced buffer geometry
+      midpoints[midpointsIdx++] = sums.x / n;
+      midpoints[midpointsIdx++] = sums.y / n;
+      midpoints[midpointsIdx++] = sums.x / n;
+      midpoints[midpointsIdx++] = sums.y / n;
+    }
+  })
+  return {
+    positions: new THREE.BufferAttribute(new Float32Array(positions), 3),
+    midpoints: new THREE.BufferAttribute(new Float32Array(midpoints), 2),
+  }
+}
+
+Lines.prototype.toggleLineDisplay = function() {
+  this.setDisplay(this.elems.select.value);
+}
+
+// selected must be 'lines' or 'images'
+Lines.prototype.setDisplay = function(selected) {
+  if (selected == 'poses') {
+    for (var i=0; i<world.group.children.length; i++) {
+      world.group.children[i].material.uniforms.display.value = 0.0;
+    }
+    lines.mesh.material.uniforms.display.value = 1.0;
+  } else {
+    for (var i=0; i<world.group.children.length; i++) {
+      world.group.children[i].material.uniforms.display.value = 1.0;
+    }
+    lines.mesh.material.uniforms.display.value = 0.0;
+  }
+}
+
+/**
 * Create a modal for larger image viewing
 **/
 
@@ -2242,6 +2492,9 @@ function Modal() {
   this.cellIdx = null;
   this.cellIndices = [];
   this.addEventListeners();
+  this.state = {
+    highlightPose: false,
+  }
 }
 
 Modal.prototype.showCells = function(cellIndices, cellIdx) {
@@ -2250,23 +2503,36 @@ Modal.prototype.showCells = function(cellIndices, cellIdx) {
   self.cellIndices = Object.assign([], cellIndices);
   self.cellIdx = !isNaN(parseInt(cellIdx)) ? parseInt(cellIdx) : 0;
   // parse data attributes
-  var multiImage = self.cellIndices.length > 1;
   var filename = data.json.images[self.cellIndices[self.cellIdx]];
-  var src = config.data.dir + '/originals/' + filename;
+  // conditionalize the path to the image
+  var src = data.json.images_cropped
+    ? config.data.dir + '/uncropped/' + trimFilenameSuffix(filename)
+    : config.data.dir + '/originals/' + filename;
+  // var src = config.data.s3Proxy + filename;
   // define function to show the modal
   function showModal(json) {
     var json = json || {};
     var template = document.querySelector('#selected-image-template').textContent;
     var target = document.querySelector('#selected-image-target');
+    var hasPose = 'pose' in data.json.layouts && data.json.layouts['pose'];
     var templateData = {
-      multiImage: multiImage,
+      hasPose: hasPose,
+      multiImage: self.cellIndices.length > 1,
       meta: Object.assign({}, json || {}, {
         src: src,
         filename: json.filename || filename,
       })
     }
-    target.innerHTML = _.template(template)(templateData)
+    target.innerHTML = _.template(template)(templateData);
     target.style.display = 'block';
+    // add the image to the svg
+    document.querySelector('#svg-image-filtered').setAttribute('href', json.image.src);
+    document.querySelector('#svg-image-unfiltered').setAttribute('href', json.image.src);
+    // add the click listener to the pose icon if relevant
+    if (hasPose) {
+      document.querySelector('#pose-highlight-icon').addEventListener('click', self.togglePoseHighlight.bind(self))
+      window.addEventListener('resize', self.resizePoseHighlight.bind(self));
+    }
     // inject the loaded image into the DOM
     document.querySelector('#selected-image-parent').appendChild(json.image);
   }
@@ -2285,6 +2551,7 @@ Modal.prototype.showCells = function(cellIndices, cellIdx) {
 Modal.prototype.close = function() {
   window.location.href = '#';
   document.querySelector('#selected-image-target').style.display = 'none';
+  window.removeEventListener('resize', self.resizePoseHighlight);
   this.cellIndices = [];
   this.cellIdx = null;
   this.displayed = false;
@@ -2313,6 +2580,105 @@ Modal.prototype.showNextCell = function() {
     ? this.cellIdx + 1
     : 0;
   this.showCells(this.cellIndices, cellIdx);
+}
+
+Modal.prototype.togglePoseHighlight = function() {
+  var highlightPose = !this.state.highlightPose;
+  if (highlightPose) {
+    document.querySelector('#pose-highlight-icon').classList.add('active');
+    this.applyGaussianFilter();
+  } else {
+    document.querySelector('#pose-highlight-icon').classList.remove('active');
+    this.removeGaussianFilter();
+  }
+  this.state.highlightPose = highlightPose;
+}
+
+Modal.prototype.applyGaussianFilter = function() {
+  // remove the extant ellipse if any
+  var elem = document.querySelector('#blur-ellipse');
+  if (elem) elem.parentNode.removeChild(elem);
+  // identify the svg to which the ellipse will be added
+  var elem = document.querySelector('#selected-image-svg');
+  var box = elem.getBoundingClientRect();
+  // get the padding of the svg / image elements
+  var padding = {};
+  ['top', 'right', 'bottom', 'left'].forEach(function(i) {
+    var s = getComputedStyle(elem, null).getPropertyValue('padding-' + i);
+    padding[i] = parseInt(s.replace('px', ''));
+  })
+  // w,h of the svg / image elements
+  var w = box.width - padding.left - padding.right;
+  var h = box.height - padding.top - padding.bottom;
+  // get the vertex data
+  var threshold = 0.1;
+  var lineData = lines.json[modal.cellIndices[modal.cellIdx]];
+  var vertices = [];
+  for (var i=0; i<lineData.length; i++) {
+    var score = lineData[i][2];
+    if (score >= threshold) {
+      vertices.push({
+        x: lineData[i][0] * w,
+        y: lineData[i][1] * h,
+        score: score,
+      })
+    }
+  }
+  var sums = {
+    x: 0,
+    y: 0,
+  };
+  var domains = {
+    x: [
+      Number.POSITIVE_INFINITY,
+      Number.NEGATIVE_INFINITY,
+    ],
+    y: [
+      Number.POSITIVE_INFINITY,
+      Number.NEGATIVE_INFINITY,
+    ],
+  }
+  vertices.forEach(function(v) {
+    sums.x += v.x;
+    sums.y += v.y;
+    if (v.x < domains.x[0]) domains.x[0] = v.x;
+    if (v.x > domains.x[1]) domains.x[1] = v.x;
+    if (v.y < domains.y[0]) domains.y[0] = v.y;
+    if (v.y > domains.y[1]) domains.y[1] = v.y;
+  })
+  // raw pixel position of ellipse for current screen size
+  var raw = {
+    'cx': sums.x / vertices.length,
+    'cy': (sums.y * 1.1) / vertices.length,
+    'rx': (domains.x[1] - domains.x[0]) * 0.7,
+    'ry': (domains.y[1] - domains.y[0]) * 0.7,
+  }
+  var normalized = {
+    'cx': (raw.cx / w) * 100 + '%',
+    'cy': (raw.cy / h) * 100 + '%',
+    'rx': (raw.rx / w) * 100 + '%',
+    'ry': (raw.ry / h) * 100 + '%',
+  }
+  var ellipse = document.createElementNS('http://www.w3.org/2000/svg', 'ellipse');
+  ellipse.setAttribute('cx', raw.cx);
+  ellipse.setAttribute('cy', raw.cy);
+  ellipse.setAttribute('rx', raw.rx);
+  ellipse.setAttribute('ry', raw.ry);
+  ellipse.setAttribute('fill', '#ffffff');
+  ellipse.setAttribute('filter', 'url(#blur-filter)');
+  ellipse.setAttribute('id', 'blur-ellipse');
+  document.querySelector('#blur-mask').appendChild(ellipse);
+  // hide the original image
+  document.querySelector('#selected-image').style.opacity = 0;
+  document.querySelector('#svg-image-filtered').style.opacity = 0.25;
+}
+
+Modal.prototype.removeGaussianFilter = function() {
+  document.querySelector('#svg-image-filtered').style.opacity = 1;
+}
+
+Modal.prototype.resizePoseHighlight = function() {
+  if (this.state.highlightPose) this.applyGaussianFilter();
 }
 
 /**
@@ -2569,7 +2935,6 @@ LOD.prototype.clear = function() {
 function Filters() {
   this.filters = [];
   self.values = [];
-  this.selected = null;
 }
 
 Filters.prototype.loadFilters = function() {
@@ -2583,59 +2948,153 @@ Filters.prototype.loadFilters = function() {
 
 // determine which images to keep in the current selection
 Filters.prototype.filterImages = function() {
-  var arr = new Float32Array(data.cells.length);
+  var indices = [];
   for (var i=0; i<data.json.images.length; i++) {
     var keep = true;
     for (var j=0; j<this.filters.length; j++) {
-      if (this.filters[j].selectImage &&
-          !this.filters[j].selectImage(data.json.images[i])) {
+      if (this.filters[j].imageSelected &&
+          !this.filters[j].imageSelected(data.json.images[i])) {
         keep = false;
         break;
       }
     }
-    arr[i] = keep ? 1.0 : 0.35;
+    if (keep) indices.push(i);
   }
-  world.setBuffer('opacity', arr);
+  world.setOpaqueImages(indices);
 }
 
 function Filter(obj) {
   this.values = obj.filter_values || [];
-  this.name = obj.filter_name || '';
   if (this.values.length <= 1) return;
+  this.selected = null;
+  this.name = obj.filter_name || '';
+  this.elem = document.createElement('div');
+  this.elem.addEventListener('mouseenter', this.show.bind(this));
+  this.elem.addEventListener('mouseleave', this.hide.bind(this));
   // create the filter's select
-  var select = document.createElement('select'),
-      option = document.createElement('option');
-  option.textContent = 'All Values';
-  select.appendChild(option);
+  this.elem.className = 'filter';
+  var label = document.createElement('div');
+  label.className = 'settings-label filter-label';
+  label.textContent = 'Category';
+  this.elem.appendChild(label);
   // format all filter options
+  var children = document.createElement('div');
+  children.className = 'filter-options';
   for (var i=0; i<this.values.length; i++) {
-    var option = document.createElement('option');
-    option.textContent = this.values[i].replace(/__/g, ' ');
-    select.appendChild(option);
+    var child = document.createElement('div');
+    child.setAttribute('data-label', this.values[i]);
+    child.addEventListener('click', this.onChange.bind(this));
+    child.className = 'filter-option no-highlight';
+    var input = document.createElement('input');
+    var label = document.createElement('div');
+    input.setAttribute('type', 'checkbox');
+    label.textContent = this.values[i].replace(/__/g, ' ');
+    child.appendChild(input);
+    child.appendChild(label);
+    children.appendChild(child);
   }
-  // add the change listener
-  var self = this;
-  select.onchange = function(e) {
-    self.selected = e.target.value;
-    if (self.selected == 'All Values') {
-      // function that indicates whether to include an image in a selection
-      self.selectImage = function(image) { return true; }
-      filters.filterImages();
-    } else {
-      var filename = self.selected.replace(/\//g, '-').replace(/ /g, '__') + '.json',
-          path = getPath(config.data.dir + '/metadata/options/' + filename);
-      get(path, function(json) {
-        var vals = json.reduce(function(obj, i) {
-          obj[i] = true;
-          return obj;
-        }, {})
-        self.selectImage = function(image) { return image in vals; }
-        filters.filterImages();
-      })
-    }
-  }
+  this.elem.appendChild(children);
   // add the select to the DOM
-  document.querySelector('#filters').appendChild(select);
+  document.querySelector('#filters').appendChild(this.elem);
+  // allow canvas clicks to close the filter options
+  document.querySelector('#pixplot-canvas').addEventListener('click', this.hide.bind(this));
+}
+
+Filter.prototype.showHide = function(e) {
+  this.elem.classList.toggle('open');
+}
+
+Filter.prototype.show = function() {
+  this.elem.classList.add('open');
+}
+
+Filter.prototype.hide = function() {
+  this.elem.classList.remove('open');
+}
+
+Filter.prototype.onChange = function(e) {
+  // find the filter
+  var elem = e.target;
+  while (!elem.classList.contains('filter-option')) elem = elem.parentNode;
+  // toggle the classlist
+  elem.classList.toggle('active');
+  // update the ui given the state of this element
+  if (elem.classList.contains('active')) {
+    // uncheck all of the other options
+    var elems = this.elem.querySelectorAll('.filter-option');
+    for (var i=0; i<elems.length; i++) {
+      elems[i].classList.remove('active');
+      elems[i].querySelector('input').checked = false;
+    }
+    // update state
+    elem.classList.add('active');
+    elem.querySelector('input').checked = true;
+    this.selected = elem.getAttribute('data-label');
+    this.elem.classList.add('has-selection');
+  } else {
+    // update state
+    elem.classList.remove('active');
+    elem.querySelector('input').checked = false;
+    this.selected = null;
+    this.elem.classList.remove('has-selection');
+  }
+  if (!this.selected) {
+    // function that indicates whether to include an image in a selection
+    this.imageSelected = function(image) {
+      return true;
+    }
+    filters.filterImages();
+  } else {
+    var filename = this.selected.replace(/\//g, '-').replace(/ /g, '__') + '.json',
+        path = getPath(config.data.dir + '/metadata/options/' + filename);
+    get(path, function(json) {
+      var vals = json.reduce(function(obj, i) {
+        obj[i] = true;
+        return obj;
+      }, {})
+      this.imageSelected = function(image) {
+        return data.json.images_cropped
+          ? trimFilenameSuffix(image) in vals
+          : image in vals
+      }
+      filters.filterImages();
+    }.bind(this))
+  }
+}
+
+/**
+* Settings
+**/
+
+function Settings() {
+  this.elems = {
+    tray: document.querySelector('#header-controls-bottom'),
+    icon: document.querySelector('#settings-icon'),
+  }
+  this.state = {
+    open: false,
+  }
+  this.elems.icon.addEventListener('click', this.toggleOpen.bind(this));
+}
+
+Settings.prototype.open = function() {
+  this.state.open = true;
+  this.elems.tray.classList.add('open');
+  this.elems.icon.classList.add('no-tooltip');
+  this.elems.icon.classList.add('active');
+  tooltip.hide();
+}
+
+Settings.prototype.close = function() {
+  this.state.open = false;
+  this.elems.tray.classList.remove('open');
+  this.elems.icon.classList.remove('no-tooltip');
+  this.elems.icon.classList.remove('active');
+}
+
+Settings.prototype.toggleOpen = function() {
+  if (this.state.open) this.close();
+  else this.open();
 }
 
 /**
@@ -2662,6 +3121,8 @@ function Hotspots() {
     template: document.querySelector('#hotspot-template'),
     hotspots: document.querySelector('#hotspots'),
     nav: document.querySelector('nav'),
+    tooltip: document.querySelector('#hotspots-tooltip'),
+    clearTooltip: document.querySelector('#hotspots-tooltip-button'),
   }
   this.addEventListeners();
 }
@@ -2675,6 +3136,7 @@ Hotspots.prototype.initialize = function() {
 }
 
 Hotspots.prototype.handleJson = function(json) {
+  if (json.length == 0) this.elems.nav.style.display = 'none';
   this.json = json;
   this.render();
 }
@@ -2682,14 +3144,10 @@ Hotspots.prototype.handleJson = function(json) {
 Hotspots.prototype.addEventListeners = function() {
   // add create hotspot event listener
   this.elems.createHotspot.addEventListener('click', function() {
-    var img = null,
-        nImages = 0,
-        keys = Object.keys(lasso.selected);
-    for (var i=0; i<keys.length; i++) {
-      if (lasso.selected[keys[i]]) {
-        nImages++;
-        img = keys[i];
-      }
+    // find the indices of the cells selected
+    var indices = [];
+    for (var i=0; i<data.cells.length; i++) {
+      if (lasso.selected[ data.json.images[i] ]) indices.push(i);
     }
     // flatten the user's selection to a 2D array
     var hull = [];
@@ -2700,8 +3158,8 @@ Hotspots.prototype.addEventListeners = function() {
     this.json.push({
       convex_hull: hull,
       label: data.hotspots.getUserClusterName(),
-      img: img,
-      n_images: nImages,
+      img: data.json.images[choose(indices)],
+      images: indices,
     })
     this.setCreateHotspotVisibility(false);
     this.setEdited(true);
@@ -2748,6 +3206,16 @@ Hotspots.prototype.addEventListeners = function() {
     // if the dragged item changed positions, allow user to save data
     if (idxA != idxB) this.setEdited(true);
   }.bind(this))
+  // add tooltip event listener
+  this.elems.nav.addEventListener('mouseenter', function(e) {
+    if (localStorage.getItem('hotspots-tooltip-cleared')) return;
+    this.elems.tooltip.style.display = 'block';
+  }.bind(this))
+  // add tooltip clearing event listener
+  this.elems.clearTooltip.addEventListener('click', function(e) {
+    localStorage.setItem('hotspots-tooltip-cleared', true);
+    this.elems.tooltip.style.display = 'none';
+  }.bind(this))
 }
 
 Hotspots.prototype.render = function() {
@@ -2776,6 +3244,9 @@ Hotspots.prototype.render = function() {
     }.bind(this, i));
     // show the convex hull of a cluster on mouse enter
     hotspots[i].addEventListener('mouseenter', function(idx) {
+      // update the hover cell buffer
+      this.setHotspotHoverBuffer(this.json[idx].images);
+      // draw the convex hull around the cells in this cluster
       var h = this.json[idx].convex_hull;
       if (!h) return;
       var shape = new THREE.Shape();
@@ -2787,11 +3258,14 @@ Hotspots.prototype.render = function() {
       material.opacity = 0.25;
       var mesh = new THREE.Mesh(geometry, material);
       mesh.position.z = -0.01;
-      world.scene.add(mesh);
+      //world.scene.add(mesh);
       this.mesh = mesh;
     }.bind(this, i))
     // remove the convex hull shape on mouseout
     hotspots[i].addEventListener('mouseleave', function(e) {
+      // update the hover cell buffer
+      this.setHotspotHoverBuffer([]);
+      // remove the mesh
       world.scene.remove(this.mesh);
     }.bind(this))
     // allow users on localhost to delete hotspots
@@ -2847,10 +3321,6 @@ Hotspots.prototype.render = function() {
       elem.classList.add('dragging');
       e.dataTransfer.setData('text', id);
     })
-    // fade the hotspot in
-    setTimeout(function(i) {
-      hotspots[i].style.opacity = 1;
-    }.bind(this, i), i*100);
   }
 }
 
@@ -2897,6 +3367,20 @@ Hotspots.prototype.setCreateHotspotVisibility = function(bool) {
 
 Hotspots.prototype.setSaveHotspotsVisibility = function(bool) {
   this.elems.saveHotspots.style.display = bool ? 'inline-block' : 'none';
+}
+
+Hotspots.prototype.setHotspotHoverBuffer = function(arr) {
+  // arr contains an array of indices of cells currently selected - create dict for fast lookups
+  var d = arr.reduce(function(obj, i) {
+    obj[i] = true;
+    return obj;
+  }, {})
+  // create the buffer to be assigned
+  var arr = new Uint8Array(data.cells.length);
+  for (var i=0; i<arr.length; i++) {
+    arr[i] = d[i] ? 1 : 0;
+  }
+  world.setBuffer('clusterSelected', arr);
 }
 
 /**
@@ -2975,7 +3459,7 @@ function Tooltip() {
   this.elem = document.querySelector('#tooltip');
   this.targets = [
     {
-      elem: document.querySelector('#layout-grid'),
+      elem: document.querySelector('#layout-alphabetic'),
       text: 'Order images alphabetically by filename',
     },
     {
@@ -2983,7 +3467,7 @@ function Tooltip() {
       text: 'Cluster images via UMAP dimensionality reduction',
     },
     {
-      elem: document.querySelector('#layout-rasterfairy'),
+      elem: document.querySelector('#layout-grid'),
       text: 'Represent UMAP clusters on a grid',
     },
     {
@@ -2995,22 +3479,29 @@ function Tooltip() {
       text: 'Arrange images into metadata groups',
     },
     {
-      elem: document.querySelector('#filters'),
-      text: 'Highlight images with selected metadata attribute',
+      elem: document.querySelector('#layout-pose'),
+      text: 'Cluster poses via UMAP dimensionality reduction',
+    },
+    {
+      elem: document.querySelector('#settings-icon'),
+      text: 'Configure plot settings',
     },
   ];
   this.targets.forEach(function(i) {
     i.elem.addEventListener('mouseenter', function(e) {
+      if (e.target.classList.contains('no-tooltip')) return;
       var offsets = i.elem.getBoundingClientRect();
       this.elem.textContent = i.text;
       this.elem.style.position = 'absolute';
       this.elem.style.left = (offsets.left + i.elem.clientWidth - this.elem.clientWidth + 9) + 'px';
       this.elem.style.top = (offsets.top + i.elem.clientHeight + 16) + 'px';
     }.bind(this));
-    i.elem.addEventListener('mouseout', function(e) {
-      this.elem.style.top = '-10000px';
-    }.bind(this))
-  }.bind(this))
+    i.elem.addEventListener('mouseleave', this.hide.bind(this))
+  }.bind(this));
+}
+
+Tooltip.prototype.hide = function() {
+  this.elem.style.top = '-10000px';
 }
 
 /**
@@ -3148,6 +3639,36 @@ function downloadFile(data, filename) {
   a.parentNode.removeChild(a);
 }
 
+function downloadBlob(blob, filename) {
+  var a = document.createElement('a');
+  document.body.appendChild(a);
+  a.download = filename;
+  a.href = window.URL.createObjectURL(blob);
+  a.click();
+  a.parentNode.removeChild(a);
+}
+
+// pass the dataUrl for image at location `src` to `callback`
+function imageToDataUrl(src, callback, mimetype) {
+  mimetype = mimetype || 'image/png';
+  var img = new Image();
+  img.crossOrigin = 'Anonymous';
+  img.onload = function() {
+    var canvas = document.createElement('CANVAS');
+    var ctx = canvas.getContext('2d');
+    canvas.height = this.naturalHeight;
+    canvas.width = this.naturalWidth;
+    ctx.drawImage(this, 0, 0);
+    var dataUrl = canvas.toDataURL(mimetype);
+    callback({src: src, dataUrl: dataUrl});
+  };
+  img.src = src;
+  if (img.complete || img.complete === undefined) {
+    img.src = 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==';
+    img.src = src;
+  }
+}
+
 /**
 * Find the smallest z value among all cells
 **/
@@ -3175,6 +3696,14 @@ function getElem(tag, obj) {
     elem[attr] = obj[attr];
   })
   return elem;
+}
+
+/**
+* Choose an element from an array
+**/
+
+function choose(arr) {
+  return arr[ Math.floor(Math.random() * arr.length) ];
 }
 
 /**
@@ -3211,14 +3740,20 @@ function getCanvasSize() {
 }
 
 /**
-* Get the user's current url route
+* Filename and path helpers
 **/
 
 function getPath(path) {
   var base = window.location.origin;
   base += window.location.pathname.replace('index.html', '');
-  base += path.replace('output/', '');
+  base += path.replace('\\','/').replace('output/', '');
   return base;
+}
+
+function trimFilenameSuffix(filename) {
+  var suffix = filename.split('.')[ filename.split('.').length - 1 ];
+  var split = filename.split('-');
+  return split.slice(0, split.length-1).join('-') + '.' + suffix;
 }
 
 /**
@@ -3404,7 +3939,6 @@ var welcome = new Welcome();
 var webgl = new Webgl();
 var config = new Config();
 var filters = new Filters();
-var search = new Search();
 var picker = new Picker();
 var modal = new Modal();
 var keyboard = new Keyboard();
@@ -3413,6 +3947,8 @@ var layout = new Layout();
 var world = new World();
 var text = new Text();
 var dates = new Dates();
+var lines = new Lines();
 var lod = new LOD();
+var settings = new Settings();
 var tooltip = new Tooltip();
 var data = new Data();

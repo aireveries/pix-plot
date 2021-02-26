@@ -15,16 +15,12 @@ build:
   image: aireverie/pix-plot:latest
 
 declarations:
-  image_files: /mnt/clients/motorola/human/images/*.png
-  clusters: 50
-  output_folder: /mnt/users/patrick/pphuman
-  layout: umap
+  s3_path: s3://aireverie-datasets/clients/epri
 
 run: 
-  cmd: >
-    python3.6 utils/process_images.py
-      --clusters={{ clusters }}
-      --output_folder={{ output_folder }}
-      --layout={{ layout }}
-      --image_files={{ image_files }}
-
+  cmd:
+    - python sync_from_s3.py --coco {{ s3_path }}
+    - PYTHONPATH=. python pixplot/pixplot.py --images '{{ s3_path }}/images/**/*' --out_dir output_full
+    - python extract_objects.py {{ s3_path }}
+    - PYTHONPATH=. python pixplot/pixplot.py --images '{{ s3_path }}/objects/**/*.{{ ext }}' --out_dir output_objects
+    - python upload_to_s3.py {{ s3_path }}
