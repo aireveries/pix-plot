@@ -212,7 +212,7 @@ def filter_images(**kwargs):
     image_paths = subdivide_images_with_openpose(image_paths=image_paths, **kwargs)
   # process and filter the images
   filtered_image_paths = []
-  for i in stream_images(image_paths=image_paths):
+  for i in tqdm(stream_images(image_paths=image_paths), 'filtering out images'):
     # get image height and width
     w, h = i.original.size
     # remove images with 0 height or width when resized to lod height
@@ -312,15 +312,14 @@ def stream_images(**kwargs):
 
 def clean_filename(s, **kwargs):
   '''Given a string that points to a filename, return a clean filename'''
-  # s = unquote(os.path.basename(s))
-  s = unquote(s)
-  # invalid_chars = '<>:;,"/\\|?*[]'
-  # invalid_chars = '<>:;,"/\\|?*[]'
-  # for i in invalid_chars: s = s.replace(i, '')
-  # if kwargs.get('extract_poses', False):
-  #   extension = s.split('.')[-1]
-  #   s = '-'.join(s.split('-')[:-1]) + '.' + extension
-  # return s
+  s = unquote(os.path.basename(s))
+  # s = unquote(s)
+  invalid_chars = '<>:;,"/\\|?*[]'
+  invalid_chars = '<>:;,"/\\|?*[]'
+  for i in invalid_chars: s = s.replace(i, '')
+  if kwargs.get('extract_poses', False):
+    extension = s.split('.')[-1]
+    s = '-'.join(s.split('-')[:-1]) + '.' + extension
   return s
 
 
@@ -632,7 +631,7 @@ def vectorize_images(**kwargs):
           # np.save(vector_path,vec)
         vecs.append(vec)
         row_index += 1
-      print(' * vectorized {}/{} images'.format( (i_batch+1) * batch_size, len(kwargs['image_paths'])))
+      # print(' * vectorized {}/{} images'.format( (i_batch+1) * batch_size, len(kwargs['image_paths'])))
     return np.array(vecs)
 
 
@@ -1233,8 +1232,8 @@ def get_hotspots(**kwargs):
     d[i]['centroid'] = np.array([np.mean(x), np.mean(y)]).tolist()
     # find the image closest to the centroid
     closest, _ = pairwise_distances_argmin_min(np.array([d[i]['centroid']]), v)
-    # d[i]['img'] = os.path.basename(kwargs['image_paths'][closest[0]])
-    d[i]['img'] = kwargs['image_paths'][closest[0]]
+    d[i]['img'] = os.path.basename(kwargs['image_paths'][closest[0]])
+    # d[i]['img'] = kwargs['image_paths'][closest[0]]
   # remove massive clusters
   deletable = []
   for i in d:
@@ -1301,19 +1300,16 @@ def write_images(**kwargs):
   '''Write all originals and thumbs to the output dir'''
   for i in stream_images(**kwargs):
     filename = clean_filename(i.path)
-    # # copy original for lightbox
-    # out_dir = join(kwargs['out_dir'], 'originals')
-    # if not exists(out_dir): os.makedirs(out_dir)
-    # out_path = join(out_dir, filename)
-    # if not os.path.exists(out_path):
-    #   shutil.copy(i.path, out_path)
-
+    # copy original for lightbox
+    out_dir = join(kwargs['out_dir'], 'originals')
+    if not exists(out_dir): os.makedirs(out_dir)
+    out_path = join(out_dir, filename)
+    if not os.path.exists(out_path):
+      shutil.copy(i.path, out_path)
     # copy thumb for lod texture
     out_dir = join(kwargs['out_dir'], 'thumbs')
-    # if not exists(out_dir): os.makedirs(out_dir)
-    # out_path = join(out_dir, filename)
-    out_path = Path(out_dir) / filename
-    out_path.parent.mkdir(parents=True, exist_ok=True)
+    if not exists(out_dir): os.makedirs(out_dir)
+    out_path = join(out_dir, filename)
     img = array_to_img(i.resize_to_max(kwargs['lod_cell_height']))
     save_img(out_path, img)
 
