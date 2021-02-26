@@ -1,0 +1,19 @@
+version: 1
+
+kind: notebook
+
+environment:
+  secret_refs: ["aws-creds"]
+  node_selector:
+    aws/type: p3.2xlarge
+  resources:
+    gpu:
+      requests: 1
+      limits: 1
+
+build:
+  backend: kaniko
+  image: aireverie/pix-plot:latest
+
+  # build_steps:
+  #   - pip install jupyter

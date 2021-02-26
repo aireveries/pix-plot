@@ -1,17 +1,23 @@
+from os.path import join, exists, dirname, realpath
 from setuptools import setup
-from os.path import join
-import os
+import os, sys
+
+# validate python version
+if sys.version_info < (3,6):
+  sys.exit('Sorry, PixPlot requires Python 3.6 or later')
 
 # populate list of all paths in `./pixplot/web`
 web = []
-for root, subdirs, files in os.walk(os.path.join('pixplot', 'web')):
-  if not files: continue
-  for file in files:
-    web.append(os.path.join(root.replace('pixplot/', ''), file))
+dirs = [join('pixplot', 'web'), join('pixplot', 'models')]
+for i in dirs:
+  for root, subdirs, files in os.walk(i):
+    if not files: continue
+    for file in files:
+      web.append(join(root.replace('pixplot/', '').replace('pixplot\\',''), file))
 
 setup(
   name='pixplot',
-  version='0.0.93',
+  version='0.0.103',
   packages=['pixplot'],
   package_data={
     'pixplot': web,
@@ -24,21 +30,22 @@ setup(
   license='MIT',
   install_requires=[
     'cmake>=3.15.3',
+    'Cython>=0.29.21',
     'glob2>=0.6',
-    'hdbscan>=0.8.24',
+    'h5py==2.10.0',
     'iiif-downloader>=0.0.6',
     'Keras<=2.3.0',
-    'matplotlib>=2.0.0',
-    'numpy>=1.16.0',
     'Pillow>=6.1.0',
     'pointgrid>=0.0.2',
     'python-dateutil>=2.8.0',
-    'scikit-learn>=0.19.0',
-    'scipy>=1.1.0',
-    'tensorflow>=1.14.0<=2.0.0',
-    'umap-learn>=0.3.10',
+    'scikit-learn==0.22',
+    'scipy==1.4.0',
+    'tensorflow==1.14.0',
+    'umap-learn==0.5.1',
     'yale-dhlab-rasterfairy>=1.0.3',
     'yale-dhlab-keras-preprocessing>=1.1.1',
+    'matplotlib',
+    'tqdm'
   ],
   entry_points={
     'console_scripts': [

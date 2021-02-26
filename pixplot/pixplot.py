@@ -1,33 +1,35 @@
 from __future__ import division
 import warnings; warnings.filterwarnings('ignore')
+from torchvision.models import inception_v3
+from torch.utils.data import DataLoader
+from pathlib import Path
+from tqdm import tqdm
+
 from keras.preprocessing.image import save_img, img_to_array, array_to_img
 from os.path import basename, join, exists, dirname, realpath
 from keras.applications.inception_v3 import preprocess_input
 from keras.applications import InceptionV3, imagenet_utils
-from torchvision.models import inception_v3
-from torch.utils.data import DataLoader
 from sklearn.metrics import pairwise_distances_argmin_min
 from keras.backend.tensorflow_backend import set_session
+from collections import defaultdict, namedtuple
 from dateutil.parser import parse as parse_date
 from sklearn.preprocessing import minmax_scale
 from keras_preprocessing.image import load_img
 from pointgrid import align_points_to_grid
+from scipy.spatial.distance import cdist
 from distutils.dir_util import copy_tree
 from sklearn.decomposition import PCA
 from sklearn.cluster import MeanShift
 from dataset import PixPlotDataset
 from scipy.spatial import ConvexHull
 from iiif_downloader import Manifest
-from collections import defaultdict
 from rasterfairy import coonswarp
-import matplotlib.pyplot as plt
 from keras.models import Model
 from scipy.stats import kde
-from hdbscan import HDBSCAN
 import keras.backend as K
 import tensorflow as tf
-from umap import UMAP
 import multiprocessing
+from umap import UMAP
 import pkg_resources
 import rasterfairy
 import numpy as np
@@ -57,6 +59,25 @@ try:
 except:
   from urllib import unquote # python 2
 
+try:
+  from urllib.request import retrieve as download_function # python 3
+except:
+  from urllib.request import urlretrieve as download_function # python 2
+
+try:
+  from tf_pose.networks import get_graph_path, model_wh
+  from tf_pose.estimator import TfPoseEstimator
+  from tf_pose import common
+except:
+  pass
+
+try:
+  from hdbscan import HDBSCAN
+  cluster_method = 'hdbscan'
+except:
+  from sklearn.cluster import KMeans
+  cluster_method = 'kmeans'
+
 # handle dynamic GPU memory allocation
 tf_config = tf.compat.v1.ConfigProto()
 tf_config.gpu_options.allow_growth = True
@@ -76,17 +97,23 @@ config = {
   'use_cache': True,
   'encoding': 'utf8',
   'min_cluster_size': 20,
+  'max_clusters': 10,
   'atlas_size': 2048,
   'cell_size': 32,
   'lod_cell_height': 128,
-  'n_neighbors': 6,
-  'min_distance': 0.001,
+  'n_neighbors': 15,
+  'min_distance': 0.01,
   'metric': 'correlation',
   'pointgrid_fill': 0.05,
   'square_cells': False,
   'gzip': False,
+  'extract_poses': False,
+  'min_size': 100,
+  'min_score': 0.3,
+  'min_vertices': 18,
   'plot_id': str(uuid.uuid1()),
   'seed': 24,
+  'n_clusters': 12,
 }
 
 
@@ -131,7 +158,10 @@ def make_torch_prediction(model,im):
     model(im)
     # remove the hook so multiple don't exist at the same time
     h.remove()
-    return my_embedding.detach().numpy().squeeze()
+    if torch.cuda.is_available():
+      return my_embedding.detach().cpu().numpy().squeeze()    
+    else:
+      return my_embedding.detach().numpy().squeeze()
 
 
 
@@ -157,10 +187,34 @@ def copy_web_assets(**kwargs):
 
 def filter_images(**kwargs):
   '''Main method for filtering images given user metadata (if provided)'''
-  image_paths = []
-  for i in stream_images(image_paths=get_image_paths(**kwargs)):
+  # validate that input image names are unique
+  image_paths = set()
+  duplicates = set()
+  for p in tqdm(get_image_paths(**kwargs), 'finding images'):
+    if p in image_paths:
+      duplicates.add(p)
+    image_paths.add(p)
+  if duplicates:
+    raise Exception('''
+      Image filenames should be unique, but the following filenames are duplicated\n
+      {}
+      '''.format('\n'.join(duplicates)))
+  image_paths = sorted(image_paths)
+  # if the user requested pose detection, subdivide images
+  if kwargs.get('extract_poses', False):
+    # copy the uncropped input images
+    if not os.path.exists(os.path.join(kwargs['out_dir'], 'uncropped')):
+      os.makedirs(os.path.join(kwargs['out_dir'], 'uncropped'))
+    for i in image_paths:
+      target_path = os.path.join(kwargs['out_dir'], 'uncropped', os.path.basename(i))
+      if not os.path.exists(target_path):
+        shutil.copy(i, target_path)
+    image_paths = subdivide_images_with_openpose(image_paths=image_paths, **kwargs)
+  # process and filter the images
+  filtered_image_paths = []
+  for i in tqdm(stream_images(image_paths=image_paths), 'filtering out images'):
     # get image height and width
-    w,h = i.original.size
+    w, h = i.original.size
     # remove images with 0 height or width when resized to lod height
     if (h == 0) or (w == 0):
       print(' * skipping {} because it contains 0 height or width'.format(i.path))
@@ -175,17 +229,17 @@ def filter_images(**kwargs):
     if (w/h) > (kwargs['atlas_size']/kwargs['cell_size']):
       print(' * skipping {} because its dimensions are oblong'.format(i.path))
       continue
-    image_paths.append(i.path)
+    filtered_image_paths.append(i.path)
+  # if there are no remaining images, throw an error
+  if len(filtered_image_paths) == 0:
+    raise Exception('No images were found! Please check your input image glob.')
   # handle the case user provided no metadata
   if not kwargs.get('metadata', False):
-    return [
-      limit_image_count(image_paths, **kwargs),
-      [],
-    ]
+    return [filtered_image_paths, []]
   # handle user metadata: retain only records with image and metadata
   l = get_metadata_list(**kwargs)
   meta_bn = set([clean_filename(i.get('filename', '')) for i in l])
-  img_bn = set([clean_filename(i) for i in image_paths])
+  img_bn = set([clean_filename(i, **kwargs) for i in filtered_image_paths])
   # identify images with metadata and those without metadata
   meta_present = img_bn.intersection(meta_bn)
   meta_missing = list(img_bn - meta_bn)
@@ -198,23 +252,13 @@ def filter_images(**kwargs):
   d = {clean_filename(i['filename']): i for i in l}
   images = []
   metadata = []
-  for i in image_paths:
-    if clean_filename(i) in meta_present:
+  for i in filtered_image_paths:
+    if clean_filename(i, **kwargs) in meta_present:
       images.append(i)
-      metadata.append(d[clean_filename(i)])
+      metadata.append(copy.deepcopy(d[clean_filename(i, **kwargs)]))
   kwargs['metadata'] = metadata
   write_metadata(**kwargs)
-  return [
-    limit_image_count(images, **kwargs),
-    limit_image_count(metadata, **kwargs),
-  ]
-
-
-def limit_image_count(arr, **kwargs):
-  '''If the user passed a max_images value, return [:max_images] from arr'''
-  if kwargs.get('max_images', False):
-    return arr[:kwargs['max_images']]
-  return arr
+  return [images, metadata]
 
 
 def get_image_paths(**kwargs):
@@ -234,15 +278,23 @@ def get_image_paths(**kwargs):
         image_paths = sorted(glob2.glob(os.path.join('iiif-downloads', 'images', '*')))
   # handle case where images flag points to a glob of images
   if not image_paths:
-    image_paths = sorted(glob2.glob(kwargs['images']))
+    temp_image_paths = sorted(glob2.glob(kwargs['images']))
+    image_paths = []
+    for path in temp_image_paths:
+      if path.endswith('.jpg') or path.endswith('.jpeg') or path.endswith('.png'):
+        image_paths.append(path)
   # handle case user provided no images
   if not image_paths:
     print('\nError: No input images were found. Please check your --images glob\n')
     sys.exit()
-  # optional shuffle that mutates image_paths
+
+  # optionally shuffle the image_paths
   if kwargs['shuffle']:
     print(' * shuffling input images')
-    random.shuffle(image_paths)
+    random.Random(kwargs['seed']).shuffle(sorted(image_paths))
+  # optionally limit the number of images in image_paths
+  if kwargs.get('max_images', False):
+    image_paths = image_paths[:kwargs['max_images']]
   return image_paths
 
 
@@ -258,9 +310,17 @@ def stream_images(**kwargs):
       print(' * image', i, 'could not be processed --', exc)
 
 
-def clean_filename(s):
+def clean_filename(s, **kwargs):
   '''Given a string that points to a filename, return a clean filename'''
-  return unquote(os.path.basename(s))
+  s = unquote(os.path.basename(s))
+  # s = unquote(s)
+  invalid_chars = '<>:;,"/\\|?*[]'
+  invalid_chars = '<>:;,"/\\|?*[]'
+  for i in invalid_chars: s = s.replace(i, '')
+  if kwargs.get('extract_poses', False):
+    extension = s.split('.')[-1]
+    s = '-'.join(s.split('-')[:-1]) + '.' + extension
+  return s
 
 
 ##
@@ -284,6 +344,10 @@ def get_metadata_list(**kwargs):
     for i in glob2.glob(kwargs['metadata']):
       with open(i) as f:
         l.append(json.load(f))
+  # if the user provided a category but not a tag, use the category as the tag
+  for i in l:
+    if i.get('category', False) and not i.get('tags', False):
+      i.update({'tags': i['category']})
   return l
 
 
@@ -294,12 +358,12 @@ def write_metadata(metadata, **kwargs):
   for i in ['filters', 'options', 'file']:
     out_path = join(out_dir, i)
     if not exists(out_path): os.makedirs(out_path)
-  # create the lists of images with each category
+  # create the lists of images with each tag
   d = defaultdict(list)
   for i in metadata:
     filename = clean_filename(i['filename'])
-    i['category'] = i.get('category', '').strip()
-    d[ '__'.join(i['category'].split()) ].append(filename)
+    i['tags'] = [j.strip() for j in i.get('tags', '').split('|')]
+    for j in i['tags']: d[ '__'.join(j.split()) ].append(filename)
     write_json(os.path.join(out_dir, 'file', filename + '.json'), i, **kwargs)
   write_json(os.path.join(out_dir, 'filters', 'filters.json'), [{
     'filter_name': 'select',
@@ -392,6 +456,7 @@ def get_manifest(**kwargs):
         'lod': kwargs['lod_cell_height'],
       },
     },
+    'images_cropped': kwargs.get('extract_poses', False),
     'creation_date': datetime.datetime.today().strftime('%d-%B-%Y-%H:%M:%S'),
   }
   path = get_path('manifests', 'manifest', **kwargs)
@@ -434,7 +499,7 @@ def get_atlas_data(**kwargs):
   y = 0 # y pos in atlas
   positions = [] # l[cell_idx] = atlas data
   atlas = np.zeros((kwargs['atlas_size'], kwargs['atlas_size'], 3))
-  for idx, i in enumerate(stream_images(**kwargs)):
+  for idx, i in enumerate(tqdm(stream_images(**kwargs), 'processing for atlas')):
     if kwargs['square_cells']:
       cell_data = i.resize_to_square(kwargs['cell_size'])
     else:
@@ -484,11 +549,11 @@ def save_atlas(atlas, out_dir, n):
 
 def get_layouts(**kwargs):
   '''Get the image positions in each projection'''
-  vecs = vectorize_images(**kwargs)
-  umap = get_umap_layout(vecs=vecs, **kwargs)
-  raster = get_rasterfairy_layout(umap=umap, **kwargs)
-  grid = get_grid_layout(**kwargs)
+  umap = get_umap_layout(**kwargs)
   umap_jittered = get_pointgrid_layout(umap, 'umap', **kwargs)
+  grid = get_rasterfairy_layout(umap=umap, **kwargs)
+  pose = get_pose_layout(**kwargs)
+  alphabetic = get_alphabetic_layout(**kwargs)
   categorical = get_categorical_layout(**kwargs)
   date = get_date_layout(**kwargs)
   layouts = {
@@ -496,12 +561,13 @@ def get_layouts(**kwargs):
       'layout': umap,
       'jittered': umap_jittered,
     },
+    'alphabetic': {
+      'layout': alphabetic,
+    },
     'grid': {
       'layout': grid,
     },
-    'rasterfairy': {
-      'layout': raster,
-    },
+    'pose': pose,
     'categorical': categorical,
     'date': date,
   }
@@ -521,30 +587,37 @@ def vectorize_images(**kwargs):
     model = Model(inputs=base.input, outputs=base.get_layer('avg_pool').output)
     print(' * creating image array')
     vecs = []
-    for idx, i in enumerate(stream_images(**kwargs)):
+    for idx, i in enumerate(tqdm(stream_images(**kwargs), 'vectorizing images')):
       vector_path = os.path.join(vector_dir, os.path.basename(i.path) + '.npy')
       if os.path.exists(vector_path) and kwargs['use_cache']:
         vec = np.load(vector_path)
       else:
         im = process_tf_model_input(img_to_array( i.original.resize((299,299))))
         vec = make_tf_prediction(model, im)
-        np.save(vector_path, vec)
+        # TODO: save vectors to feature database
+        # np.save(vector_path, vec)
       vecs.append(vec)
       print(' * vectorized {}/{} images'.format(idx+1, len(kwargs['image_paths'])))
     return np.array(vecs)
   else:
     print("Using Pytorch for feature extraction")
     base = inception_v3(pretrained=True)
+    if torch.cuda.is_available():
+        base.to('cuda')
     model = base.eval()
     print(' Creating Pytorch Dataset and DataLoader')
-    imagesdataset = PixPlotDataset(root_dir=kwargs['images'])
-    dataloader = DataLoader(imagesdataset, batch_size=4, shuffle=False, num_workers=0)
+    max_images = kwargs.get('max_images', None)
+    imagesdataset = PixPlotDataset(root_dir=kwargs['images'], max_images=max_images)
+    batch_size = 32
+    dataloader = DataLoader(imagesdataset, batch_size=batch_size, shuffle=False, num_workers=4)
     print(' * creating image array')
     vecs = []
-    for i_batch, curr_batch in enumerate(dataloader):
+    for i_batch, curr_batch in enumerate(tqdm(dataloader, 'vectorizing images')):
       # make a prediction
       filename_batch = curr_batch['filename']
       images_batch = curr_batch['data']
+      if torch.cuda.is_available():
+        images_batch = images_batch.cuda()
       tensor = make_torch_prediction(model, images_batch)
       row_index = 0
       for row in tensor:
@@ -554,23 +627,23 @@ def vectorize_images(**kwargs):
           vec = np.load(vector_path)
         else:
           vec = row
-          np.save(vector_path,vec)
+          # TODO: save vectors to feature database
+          # np.save(vector_path,vec)
         vecs.append(vec)
         row_index += 1
-      print(' * vectorized {}/{} images'.format( (i_batch+1) * 4, len(kwargs['image_paths'])))
+      # print(' * vectorized {}/{} images'.format( (i_batch+1) * batch_size, len(kwargs['image_paths'])))
     return np.array(vecs)
 
 
 def get_umap_layout(**kwargs):
   '''Get the x,y positions of images passed through a umap projection'''
+  vecs = vectorize_images(**kwargs)
   print(' * creating UMAP layout')
   out_path = get_path('layouts', 'umap', **kwargs)
   if os.path.exists(out_path) and kwargs['use_cache']: return out_path
-  model = UMAP(n_neighbors=kwargs['n_neighbors'],
-    min_dist=kwargs['min_distance'],
-    metric=kwargs['metric'])
+  model = get_umap_model(**kwargs)
   # run PCA to reduce dimensionality of image vectors
-  w = PCA(n_components=min(100, len(kwargs['vecs']))).fit_transform(kwargs['vecs'])
+  w = PCA(n_components=min(100, len(vecs))).fit_transform(vecs)
   # fetch categorical labels for images (if provided)
   y = []
   if kwargs.get('metadata', False):
@@ -585,6 +658,14 @@ def get_umap_layout(**kwargs):
   # project the PCA space down to 2d for visualization
   z = model.fit(w, y=y if np.any(y) else None).embedding_
   return write_layout(out_path, z, **kwargs)
+
+
+def get_umap_model(**kwargs):
+  return UMAP(n_neighbors=kwargs['n_neighbors'],
+    min_dist=kwargs['min_distance'],
+    metric=kwargs['metric'],
+    random_state=kwargs['seed'],
+    transform_seed=kwargs['seed'])
 
 
 def get_tsne_layout(**kwargs):
@@ -615,7 +696,34 @@ def get_rasterfairy_layout(**kwargs):
   return write_layout(out_path, pos, **kwargs)
 
 
-def get_grid_layout(**kwargs):
+def get_lap_layout(**kwargs):
+  print(' * creating linear assignment layout')
+  try:
+    import lap
+  except:
+    raise Exception('LAP must be installed to use get_lap_layout')
+  out_path = get_path('layouts', 'linear-assignment', **kwargs)
+  if os.path.exists(out_path) and kwargs['use_cache']: return out_path
+  # load the umap layout
+  umap = np.array(read_json(kwargs['umap'], **kwargs))
+  umap = (umap + 1)/2 # scale 0:1
+  # determine length of each side in square grid
+  side = math.ceil(umap.shape[0]**(1/2))
+  # create square grid 0:1 in each dimension
+  grid_x, grid_y = np.meshgrid(np.linspace(0, 1, side), np.linspace(0, 1, side))
+  grid = np.dstack((grid_x, grid_y)).reshape(-1, 2)
+  # compute pairwise distance costs
+  cost = cdist(grid, umap, 'sqeuclidean')
+  # increase cost
+  cost = cost * (10000000. / cost.max())
+  # run the linear assignment
+  min_cost, row_assignments, col_assignments = lap.lapjv(np.copy(cost), extend_cost=True)
+  # use the assignment vals to determine gridified positions of `arr`
+  pos = grid[col_assignments]
+  return write_layout(out_path, pos, **kwargs)
+
+
+def get_alphabetic_layout(**kwargs):
   '''Get the x,y positions of images in a grid projection'''
   print(' * creating grid layout')
   out_path = get_path('layouts', 'grid', **kwargs)
@@ -637,12 +745,176 @@ def get_pointgrid_layout(path, label, **kwargs):
   out_path = get_path('layouts', label + '-jittered', **kwargs)
   if os.path.exists(out_path) and kwargs['use_cache']: return out_path
   arr = np.array(read_json(path, **kwargs))
-  z = align_points_to_grid(arr, fill=0.025)
+  z = align_points_to_grid(arr, fill=0.045)
   return write_layout(out_path, z, **kwargs)
 
 
 ##
-# Date layout
+# Pose Layout
+##
+
+
+def get_pose_layout(**kwargs):
+  '''Return the path to JSON with openpose embeddings'''
+  if not kwargs.get('extract_poses', False): return False
+  out_path = get_path('layouts', 'pose', **kwargs)
+  if os.path.exists(out_path) and kwargs['use_cache']: return out_path
+  # generate a new pose layout
+  print(' * generating pose layout')
+  vector_dir = os.path.join(kwargs['out_dir'], 'image-vectors', 'openpose')
+  vecs = []
+  # images are vectorized during subdivision step
+  for i in stream_images(**kwargs):
+    vector_path = os.path.join(vector_dir, os.path.basename(i.path) + '.npy')
+    vec = np.load(vector_path)
+    vec = vec.reshape(18, 3)
+    vec = normalize_2d_vector(vec[:,:2]) # slice out the confidence scores
+    vecs.append(vec.flatten())
+  vecs = np.array(vecs)
+  # create lower-dimensional embedding of pose vectors
+  model = get_umap_model(**kwargs)
+  z = model.fit(vecs).embedding_
+  pose_layout_path = write_layout(out_path, z, **kwargs)
+  return {
+    'layout': pose_layout_path,
+    'jittered': get_pointgrid_layout(pose_layout_path, 'pose', **kwargs),
+  }
+
+
+def get_openpose_vector(human):
+  '''Given an OpenPose human object return a vector of that human's keypoints'''
+  human_vec = []
+  # find the mean positions in x, y axes and use that position for missing verts
+  stacked = np.array([[b[1].x, b[1].y] for b in human.body_parts.items()])
+  x_mean, y_mean = np.mean(stacked, axis=(0))
+  BodyPart = namedtuple('BodyPart', ['x', 'y', 'score'])
+  for i in range(18):
+    if i in human.body_parts:
+      pos = human.body_parts[i]
+    else:
+      pos = BodyPart(x=x_mean, y=y_mean, score=0)
+    human_vec.append([pos.x or 0, pos.y or 0, pos.score or 0])
+  return np.array(human_vec)
+
+
+def crop_openpose_figure(im, vec, margin=0.4):
+  '''Given an OpenPose image and pose vector return the cropped figure'''
+  x = vec[:,0]
+  y = vec[:,1]
+  x_min = np.min(x)
+  x_max = np.max(x)
+  y_min = np.min(y)
+  y_max = np.max(y)
+  h, w, _ = im.shape
+  x_margin = (x_max-x_min) * margin
+  y_margin = (y_max-y_min) * margin/2
+  # apply the margins
+  x_min = int(max((x_min - x_margin), 0) * w)
+  x_max = int(min((x_max + x_margin), 1) * w)
+  y_min = int(max((y_min - y_margin), 0) * h)
+  y_max = int(min((y_max + y_margin), 1) * h)
+  return im[y_min:y_max, x_min:x_max, :]
+
+
+def subdivide_images_with_openpose(**kwargs):
+  '''Cut each input image into single-pose subimages and save vectors for each'''
+  print(' * subdividing images with OpenPose model')
+  download_cmu_model()
+  # determine the subset of input images for which we've already parsed pose vectors
+  parsed_path = os.path.join(kwargs['out_dir'], 'image-vectors', 'openpose', 'parsed.json')
+  vectors_path = os.path.join(kwargs['out_dir'], 'image-vectors', 'openpose', 'vectors.json')
+  # load d[original_image_path] = [{daughter_image_path: [vert confidence array]}]
+  parsed_dict = json.load(open(parsed_path)) if os.path.exists(parsed_path) else None
+  if not parsed_dict: parsed_dict = defaultdict(lambda: defaultdict())
+  # create the directories where output files will be stored
+  vector_dir = os.path.join(kwargs['out_dir'], 'image-vectors', 'openpose')
+  if not os.path.exists(vector_dir): os.makedirs(vector_dir)
+  image_dir = os.path.join(kwargs['out_dir'], 'poses')
+  if not os.path.exists(image_dir): os.makedirs(image_dir)
+  # subdivde images
+  graph_path = get_cmu_graph_path()
+  estimator = TfPoseEstimator(graph_path, target_size=(432, 368))
+  pose_image_paths = []
+  vectors_list = []
+  for idx, i in enumerate(stream_images(image_paths=kwargs['image_paths'])):
+    print(' * processing {}/{} images'.format(idx+1, len(kwargs['image_paths'])))
+    # split the file into its basename and extension
+    file_extension = i.path.split('.')[-1]
+    file_basename = '.'.join(os.path.basename(i.path).split('.')[:-1])
+    # load all relevant daughter image in the parsed dict
+    cache_filename = os.path.basename(i.path)
+    # existential check will return false for true negatives, which have {}
+    if parsed_dict.get(cache_filename, 'missing') != 'missing':
+      for pose_path, pose_vector in parsed_dict[cache_filename].items():
+        pose_vector = np.array(pose_vector).reshape(18, 3)
+        if pose_vector_is_valid(pose_vector, **kwargs):
+          pose_image_paths.append(pose_path)
+          vectors_list.append(pose_vector.tolist())
+      continue
+    # parse the new image
+    im = common.read_imgfile(i.path, None, None)
+    im = im[:, :, [2, 1, 0]] # swap color channels to rgb
+    humans = estimator.inference(im, resize_to_default=True, upsample_size=4.0)
+    for hdx, human in enumerate(humans):
+      # add image to cache (loaded json does not autovivify)
+      if file_basename not in parsed_dict: parsed_dict[cache_filename] = {}
+      # vector shape = 18, 3 (n_verts, x, y, confidence)
+      vector = get_openpose_vector(human)
+      # filter if the point with lowest confidence is too low
+      if not pose_vector_is_valid(vector, **kwargs): continue
+      # crop out the image that corresponds to this image
+      cropped_im = crop_openpose_figure(im, vector)
+      w, h, _ = cropped_im.shape
+      if (w < kwargs['min_size']) or (h < kwargs['min_size']): continue
+      vector_path = os.path.join(vector_dir, file_basename + '-' + str(hdx) + '.' + file_extension)
+      np.save(vector_path, vector.flatten())
+      vectors_list.append(vector.tolist())
+      img_path = os.path.join(image_dir, file_basename + '-' + str(hdx) + '.' + file_extension)
+      save_img(img_path, cropped_im)
+      pose_image_paths.append(img_path)
+      # add the new records to the parsed dict
+      parsed_dict[cache_filename][img_path] = vector.tolist()
+  # store the images we processed
+  write_json(parsed_path, parsed_dict)
+  write_json(vectors_path, vectors_list)
+  print(' * extracted', len(pose_image_paths), 'pose images')
+  return pose_image_paths
+
+
+def pose_vector_is_valid(vector, **kwargs):
+  '''Return a bool indicating whether to retain openpose vector `vector`'''
+  assert vector.shape == (18, 3)
+  confidence_vals = [i for i in vector[:,2] if i > 0]
+  if len(confidence_vals) < kwargs['min_vertices']: return False
+  if min(confidence_vals) < kwargs['min_score']: return False
+  return True
+
+
+def normalize_2d_vector(arr):
+  '''Normalize a 2d vector by subtracting the axis mean from each point'''
+  x, y = arr.T
+  return np.array([
+    x-np.mean(x),
+    y-np.mean(y),
+  ]).T
+
+
+def download_cmu_model():
+  '''Download the pretrained openpose model to be used'''
+  url = 'https://lab-apps.s3-us-west-2.amazonaws.com/pixplot-assets/tf-pose/graph_opt.pb'
+  out_path = get_cmu_graph_path()
+  print(' * downoading cmu model to ' + out_path)
+  out_dir = os.path.split(out_path)[0]
+  if not exists(out_dir): os.makedirs(out_dir)
+  if not exists(out_path): download_function(url, out_path)
+
+
+def get_cmu_graph_path():
+  '''Return the path to the location where the CMU graph will be stored'''
+  return os.path.join(dirname(realpath(__file__)), 'models', 'cmu', 'graph_opt.pb')
+
+##
+# Date Layout
 ##
 
 
@@ -756,7 +1028,7 @@ def round_date(date, unit):
 
 
 ##
-# Metadata layout
+# Metadata Layout
 ##
 
 
@@ -772,8 +1044,8 @@ def get_categorical_layout(null_category='Other', margin=2, **kwargs):
   labels_out_path = get_path('layouts', 'categorical-labels', **kwargs)
   if os.path.exists(out_path): return out_path
   # accumulate d[category] = [indices of points with category]
-  categories = [i['category'] if i.get('category', False) else None for i in kwargs['metadata']]
-  if not any(categories): return False
+  categories = [i.get('category', None) for i in kwargs['metadata']]
+  if not any(categories) or len(set(categories)) == 1: return False
   d = defaultdict(list)
   for idx, i in enumerate(categories): d[i].append(idx)
   # store the number of observations in each group
@@ -933,64 +1205,77 @@ def read_json(path, **kwargs):
 
 def get_hotspots(**kwargs):
   '''Return the stable clusters from the condensed tree of connected components from the density graph'''
-  print(' * HDBSCAN clustering data with ' + str(multiprocessing.cpu_count()) + ' cores...')
-  config = {
-    'core_dist_n_jobs': multiprocessing.cpu_count(),
-    'min_cluster_size': kwargs['min_cluster_size'],
-    'cluster_selection_epsilon': 0.01,
-    'min_samples': 1,
-    'approx_min_span_tree': False,
-  }
+  print(' * Clustering data with {}'.format(cluster_method))
+  model = get_cluster_model(**kwargs)
   v = kwargs['vecs']
-  useMeanShift = kwargs['mean_shift']
-  if useMeanShift:
-    z = MeanShift(bandwidth=2).fit(v)
-  else:
-    z = HDBSCAN(**config).fit(v)
-  # find the points in each cluster
-  d = defaultdict(list)
+  z = model.fit(v)
+  # create a map from cluster label to image indices in cluster
+  d = defaultdict(lambda: defaultdict(list))
+  # TODO: impelemtn MeanShift in get_cluster_model
+  # useMeanShift = kwargs['mean_shift']
+  # if useMeanShift:
+  #   z = MeanShift(bandwidth=2).fit(v)
   for idx, i in enumerate(z.labels_):
-    d[i].append(v[idx])
+    d[i]['images'].append(idx)
   # find the convex hull for each cluster's points
-  convex_hulls = []
   for i in d:
-    hull = ConvexHull(d[i])
+    positions = np.array([v[j] for j in d[i]['images']])
+    hull = ConvexHull(positions)
     points = [hull.points[j] for j in hull.vertices]
     # the last convex hull simplex needs to connect back to the first point
-    convex_hulls.append(np.vstack([points, points[0]]))
+    d[i]['convex_hull'] = np.vstack([points, points[0]]).tolist()
   # find the centroids for each cluster
   centroids = []
   for i in d:
-    x, y = np.array(d[i]).T
-    centroids.append(np.array([np.mean(x), np.mean(y)]))
-  # identify the number of points in each cluster
-  lens = [len(d[i]) for i in d]
-  # combine data into cluster objects
-  closest, _ = pairwise_distances_argmin_min(centroids, v)
-  paths = [kwargs['image_paths'][i] for i in closest]
-  clusters = [{
-    'img': clean_filename(paths[idx]),
-    'convex_hull': convex_hulls[idx].tolist(),
-    'n_images': lens[idx],
-  } for idx, i in enumerate(closest)]
+    positions = np.array([v[j] for j in d[i]['images']])
+    x, y = np.array(positions).T
+    d[i]['centroid'] = np.array([np.mean(x), np.mean(y)]).tolist()
+    # find the image closest to the centroid
+    closest, _ = pairwise_distances_argmin_min(np.array([d[i]['centroid']]), v)
+    d[i]['img'] = os.path.basename(kwargs['image_paths'][closest[0]])
+    # d[i]['img'] = kwargs['image_paths'][closest[0]]
   # remove massive clusters
-  retained = []
-  for idx, i in enumerate(clusters):
-    x, y = np.array(i['convex_hull']).T
-    area = 0.5 * np.abs(np.dot(x, np.roll(y, 1)) - np.dot(y, np.roll(x, 1)))
-    if area < 0.2:
-      retained.append(i)
-  # sort the clusers by size
-  clusters = sorted(retained, key=lambda i: i['n_images'], reverse=True)
+  deletable = []
+  for i in d:
+    # find percent of images in cluster
+    image_percent = len(d[i]['images']) / len(v)
+    # find percent of plot area in cluster
+    x, y = np.array(d[i]['convex_hull']).T
+    area_percent = 0.5 * np.abs(np.dot(x, np.roll(y, 1)) - np.dot(y, np.roll(x, 1)))
+    # determine if image or area percent is too large
+    if image_percent > 0.5 or area_percent > 0.3:
+      deletable.append(i)
+  for i in deletable: del d[i]
+  # sort the clusers by size and then label the clusters
+  clusters = d.values()
+  clusters = sorted(clusters, key=lambda i: len(i['images']), reverse=True)
   for idx, i in enumerate(clusters):
     i['label'] = 'Cluster {}'.format(idx+1)
+  # slice off the first `max_clusters`
+  clusters = clusters[:kwargs['max_clusters']]
   # save the hotspots to disk and return the path to the saved json
   print(' * found', len(clusters), 'hotspots')
   return write_json(get_path('hotspots', 'hotspot', **kwargs), clusters, **kwargs)
 
 
+def get_cluster_model(**kwargs):
+  '''Return a model with .fit() method that can be used to cluster input vectors'''
+  if cluster_method == 'hdbscan':
+    config = {
+      'core_dist_n_jobs': multiprocessing.cpu_count(),
+      'min_cluster_size': kwargs['min_cluster_size'],
+      'cluster_selection_epsilon': 0.01,
+      'min_samples': 1,
+      'approx_min_span_tree': False,
+    }
+    return HDBSCAN(**config)
+  else:
+    return KMeans(n_clusters=kwargs['n_clusters'], random_state=kwargs['seed'])
+
+
 def get_heightmap(path, label, **kwargs):
   '''Create a heightmap using the distribution of points stored at `path`'''
+  import matplotlib.pyplot as plt
   X = read_json(path, **kwargs)
   if 'positions' in X: X = X['positions']
   X = np.array(X)
@@ -1019,7 +1304,8 @@ def write_images(**kwargs):
     out_dir = join(kwargs['out_dir'], 'originals')
     if not exists(out_dir): os.makedirs(out_dir)
     out_path = join(out_dir, filename)
-    shutil.copy(i.path, out_path)
+    if not os.path.exists(out_path):
+      shutil.copy(i.path, out_path)
     # copy thumb for lod texture
     out_dir = join(kwargs['out_dir'], 'thumbs')
     if not exists(out_dir): os.makedirs(out_dir)
@@ -1073,7 +1359,6 @@ class Image:
     else: b[:h, :w, :] = a
     return b
 
-
 ##
 # Entry Point
 ##
@@ -1089,20 +1374,30 @@ def parse():
   parser.add_argument('--use_cache', type=bool, default=config['use_cache'], help='given inputs identical to prior inputs, load outputs from cache', required=False)
   parser.add_argument('--encoding', type=str, default=config['encoding'], help='the encoding of input metadata', required=False)
   parser.add_argument('--min_cluster_size', type=int, default=config['min_cluster_size'], help='the minimum number of images in a cluster', required=False)
+  parser.add_argument('--max_clusters', type=int, default=config['max_clusters'], help='the maximum number of clusters to return', required=False)
   parser.add_argument('--out_dir', type=str, default=config['out_dir'], help='the directory to which outputs will be saved', required=False)
   parser.add_argument('--cell_size', type=int, default=config['cell_size'], help='the size of atlas cells in px', required=False)
   parser.add_argument('--n_neighbors', type=int, default=config['n_neighbors'], help='the n_neighbors argument for UMAP')
   parser.add_argument('--min_distance', type=float, default=config['min_distance'], help='the min_distance argument for umap')
   parser.add_argument('--metric', type=str, default=config['metric'], help='the metric argument for umap')
   parser.add_argument('--pointgrid_fill', type=float, default=config['pointgrid_fill'], help='float 0:1 that determines sparsity of jittered distributions (lower means more sparse)')
-  parser.add_argument('--copy_web_only', action='store_true', help='update ./output/web without reprocessing data')
+  parser.add_argument('--copy_web_only', action='store_true', help='update ./output/assets without reprocessing data')
+  parser.add_argument('--extract_poses', action='store_true', help='create pose-based embeddings of input images')
+  parser.add_argument('--min_size', type=float, default=config['min_size'], help='min size of cropped images')
+  parser.add_argument('--min_score', type=float, default=config['min_score'], help='min vertex score in a pose-based embedding')
+  parser.add_argument('--min_vertices', type=int, default=config['min_vertices'], help='min number of discovered vertices in a pose-based embedding 0:18')
   parser.add_argument('--gzip', action='store_true', help='save outputs with gzip compression')
   parser.add_argument('--shuffle', action='store_true', help='shuffle the input images before data processing begins')
   parser.add_argument('--plot_id', type=str, default=config['plot_id'], help='unique id for a plot; useful for resuming processing on a started plot')
   parser.add_argument('--seed', type=int, default=config['seed'], help='seed for random processes')
+  parser.add_argument('--n_clusters', type=int, default=config['n_clusters'], help='number of clusters to use when clustering with kmeans')
   parser.add_argument('--tensorflow', action='store_true',help='uses tensorflow model if included and pytorch otherwise')
   parser.add_argument('--mean_shift', action='store_true', help='use meanshift for clustering')
   config.update(vars(parser.parse_args()))
+
+  if config['images'].startswith('s3://'):
+    config['images'] = config['images'][5:]
+
   process_images(**config)
 
 if __name__ == '__main__':

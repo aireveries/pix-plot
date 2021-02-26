@@ -38,11 +38,11 @@ select {
   user-select: none;
   cursor: pointer;
   border: none;
-  color: #333131;
+  color: #ccc;
   font-size: 13px;
-  padding: 3px 6px;
+  padding: 2px 8px;
   border-radius: 5px;
-  background-color: #c3c3c3;
+  background-color: #444;
   background-image: url(../images/icons/caret-icon.png);
   background-size: 20px;
   background-repeat: no-repeat;
@@ -126,7 +126,7 @@ select:disabled {
 
 #stats {
   position: absolute;
-  top: 60px;
+  top: 55px;
   left: 106px;
   width: 80px;
 }
@@ -136,33 +136,34 @@ select:disabled {
 **/
 
 #header {
-  height: 60px;
+  height: 48px;
   width: 100%;
   position: fixed;
   top: 0px;
-  overflow: hidden;
-  box-shadow: 2px 1px 2px rgba(39, 39, 39, 0.2);
+  box-shadow: 0 3px 6px rgba(0, 0, 0, 0.16);
+  border-bottom: 1px solid #1f1f1f;
   font-size: 0;
 }
 
 #header,
 #logo {
-  background: #333;
+  background: #333333;
   position: relative;
   z-index: 4;
 }
 
 #logo {
-  width: 40px;
+  width: 33px;
   padding: 10px;
-  height: 40px;
+  position: relative;
+  top: 2px;
 }
 
 #app-name {
   display: inline-block;
   height: 100%;
   vertical-align: top;
-  padding: 18px 34px;
+  padding: 11px 34px;
   box-sizing: border-box;
   font-weight: 300;
   background: #444;
@@ -186,6 +187,7 @@ select:disabled {
   background: inherit;
   position: relative;
   z-index: 1;
+  display: none;
 }
 
 @media(max-width: 335px) {
@@ -205,21 +207,41 @@ select:disabled {
 **/
 
 #header-controls {
-  display: inline-block;
-  position: absolute;
-  right: 20px;
-  top: 0;
-  left: 515px;
-  padding: 15px 0;
-  min-width: 280px;
+  display: block;
   opacity: 0;
   transition: opacity 0.5s;
   text-align: right;
   white-space: nowrap;
+  vertical-align: top;
+  position: absolute;
+  top: 0;
+  right: 0;
+  left: 0;
+  height: 108px;
 }
 
-#header-controls * {
-  display: inline-block;
+#header-controls-top {
+  position: absolute;
+  top: 0;
+  right: 0;
+  z-index: 4;
+}
+
+#header-controls-bottom {
+  height: 36px;
+  position: absolute;
+  top: 48px;
+  right: 0;
+  left: 0;
+  background: #222222;
+  z-index: 2;
+  transition: transform 0.3s;
+  transform: translate(0, -48px);
+  box-shadow: 0 3px 2px rgba(0, 0, 0, 0.3);
+}
+
+#header-controls-bottom.open {
+  transform: translate(0, 0);
 }
 
 /**
@@ -250,12 +272,81 @@ select:disabled {
 * Filters
 **/
 
+.settings-label {
+  font-size: 12px;
+  color: #999;
+  font-weight: 600;
+  display: inline-block;
+  margin: 10px 5px;
+}
+
 #filters {
   vertical-align: top;
   position: relative;
-  top: 2px;
   display: inline-block;
-  margin: 0 10px;
+}
+
+.filter {
+  position: relative;
+  display: inline-block;
+  font-size: 13px;
+  text-align: left;
+  color: #fff;
+  cursor: pointer;
+  padding: 6px 40px;
+  margin: 0 20px;
+}
+
+.filter-options {
+  display: none;
+  position: absolute;
+  left: 20px;
+  background: #efefef;
+  color: #000;
+  padding: 10px 20px;
+  top: 48px;
+  z-index: 0;
+}
+
+.filter.open .filter-options {
+  display: block;
+  cursor: initial;
+}
+
+.filter-label {
+  display: inline-block;
+  padding-right: 13px;
+  position: relative;
+}
+
+.filter-label::after {
+  content: '▾';
+  font-size: 10px;
+  position: absolute;
+  right: 0;
+  top: 2px;
+}
+
+.filter.has-selection .filter-label,
+.filter.has-selection .filter-label::after {
+  color: #eab755;
+}
+
+.filter-option {
+  display: block;
+  cursor: pointer;
+}
+
+.filter-option div {
+  position: relative;
+  top: -2px;
+  margin: 2px 5px;
+  display: inline-block;
+  cursor: pointer;
+}
+
+.filter-option input {
+  cursor: pointer;
 }
 
 /**
@@ -265,55 +356,51 @@ select:disabled {
 input[type=range] {
   -webkit-appearance: none;
   appearance: none;
-  width: 100%;
+  width: 100px;
   height: 2px;
-  border-radius: 10px;
-  background: #c3c3c3;
+  border-radius: 0;
+  background: #707070;
   outline: none;
+  vertical-align: top;
 }
 
 input[type=range]::-webkit-slider-thumb {
   -webkit-appearance: none;
   appearance: none;
-  width: 14px;
-  height: 14px;
+  width: 10px;
+  height: 10px;
   background: #eee;
   cursor: pointer;
-  border-radius: 14px;
+  border-radius: 10px;
 }
 
 input[type=range]::-moz-range-thumb {
   -webkit-appearance: none;
   appearance: none;
-  width: 14px;
-  height: 14px;
+  width: 10px;
+  height: 10px;
   background: #eee;
   cursor: pointer;
-  border-radius: 14px;
+  border-radius: 10px;
 }
 
 input[type=range]::-ms-thumb {
   -webkit-appearance: none;
   appearance: none;
-  width: 14px;
-  height: 14px;
+  width: 10px;
+  height: 10px;
   background: #eee;
   cursor: pointer;
-  border-radius: 14px;
+  border-radius: 10px;
+}
+
+#header-controls-bottom input[type=range] {
+  margin-top: 19px;
 }
 
 #range-slider {
-  margin-right: 10px;
-  width: 100px;
+  margin-right: 50px;
   display: inline-block;
-}
-
-#range-slider label {
-  color: #c3c3c3;
-  font-size: 9px;
-  letter-spacing: 0.05em;
-  text-transform: uppercase;
-  display: block;
 }
 
 #pointsize-range-input {
@@ -324,28 +411,41 @@ input[type=range]::-ms-thumb {
 * Dual range slider
 **/
 
+#date-container {
+  display: inline-block;
+}
+
+#date-label {
+  display: inline-block;
+  vertical-align: top;
+  margin-top: 15px;
+}
+
 #date-slider {
-  height: 6px;
+  height: 2px;
   width: 100px;
   display: inline-block;
   vertical-align: top;
   position: relative;
+  margin: 0 13px;
   top: 19px;
-  margin-left: 10px;
+  border: none;
 }
 
 #date-slider .noUi-connect {
-  background: #eab755;
+  background: #707070;
 }
 
 #date-slider .noUi-handle {
   background: #eee;
   box-shadow: none;
-  width: 16px;
-  height: 16px;
+  width: 10px;
+  height: 10px;
   border-radius: 16px;
-  right: -8px;
-  border: 1px solid #888;
+  right: -6px;
+  top: -4px;
+  border: none;
+  cursor: grab;
 }
 
 #date-slider .noUi-handle::before,
@@ -355,11 +455,19 @@ input[type=range]::-ms-thumb {
 
 #date-slider .noUi-tooltip {
   font-size: 9px;
-  padding: 0;
-  margin-bottom: 1px;
-  border: 1px solid transparent;
-  background: transparent;
-  color: #c4c4c4;
+  padding: 0 1px;
+  border: none;
+  background: #333;
+  color: #ccc;
+  font-weight: 400;
+  letter-spacing: 0.04em;
+  display: inline-block;
+  top: 14px;
+  height: 14px;
+}
+
+#date-slider .noUi-connects {
+  background: #707070;
 }
 
 /**
@@ -369,15 +477,21 @@ input[type=range]::-ms-thumb {
 #icons {
   display: inline-block;
   vertical-align: top;
-  margin-top: 5px;
+  margin-top: 10px;
+  margin-right: 20px;
 }
 
 #icons img {
   height: 19px;
-  margin: 0 8px;
+  margin: 0 30px;
   opacity: 0.2;
   cursor: pointer;
   vertical-align: top;
+  padding: 5px;
+}
+
+#icons img:hover {
+  opacity: 0.5;
 }
 
 #icons img.active {
@@ -385,8 +499,17 @@ input[type=range]::-ms-thumb {
 }
 
 #layout-date,
-#layout-categorical {
+#layout-categorical,
+#layout-pose {
   display: none;
+}
+
+#settings-icon {
+  transition: transform 0.3s;
+}
+
+#settings-icon.active {
+  transform: rotate(-360deg);
 }
 
 /**
@@ -394,23 +517,13 @@ input[type=range]::-ms-thumb {
 **/
 
 #jitter-container {
-  position: absolute;
-  top: 77px;
-  right: 20px;
-  z-index: 1;
-  background: #444;
-  font-size: 12px;
-  padding: 5px;
-  border-radius: 3px;
-  color: #dedede;
-  font-family: courier;
-  text-transform: uppercase;
-  transition: opacity 0.5s;
-  opacity: 0;
+  display: inline-block;
+  margin: 0 57px;
+  display: none;
 }
 
 #jitter-container.visible {
-  opacity: 1;
+  display: inline-block;
 }
 
 #jitter-container.disabled {
@@ -430,7 +543,15 @@ input[type=range]::-ms-thumb {
 }
 
 /**
-* Nav
+* Pose display select
+**/
+
+#pose-display-container {
+  display: none;
+}
+
+/**
+* Hotspots
 **/
 
 nav {
@@ -442,8 +563,8 @@ nav {
   width: 106px;
   height: auto;
   box-sizing: border-box;
-  padding: 60px 0 0;
-  background: rgba(17,17,17,0.95);
+  padding: 50px 0 0;
+  background: #222;
   box-shadow: 1px 0px 2px rgba(0, 0, 0, 0.7);
   transition: opacity 0.5s;
   color: #ddd;
@@ -458,7 +579,6 @@ nav {
   overflow-x: hidden;
   overflow-y: auto;
   padding-right: 30px;
-  background: #222;
   transition: opacity 0.5s;
   box-sizing: content-box;
   width: 100%;
@@ -471,27 +591,27 @@ nav.disabled #nav-inner {
 }
 
 nav h2 {
-  font-size: 0.9em;
+  font-size: 12px;
+  letter-spacing: 0.05em;
   line-height: 1.05em;
   text-align: center;
   margin: 15px 0 7px;
   text-transform: uppercase;
-  font-weight: 400;
+  font-weight: 800;
 }
 
 #hotspots {
   width: 75px;
-  padding: 0 15px;
 }
 
 .hotspot {
-  padding: 6px 0;
+  padding: 12px 15px 5px;
   display: inline-block;
   text-align: center;
   width: 75px;
-  font-size: 13px;
+  font-size: 12px;
+  color: #b3b3b3;
   position: relative;
-  transition: opacity 0.3s;
 }
 
 .hotspot-image {
@@ -503,7 +623,7 @@ nav h2 {
 .hotspot-bar-container {
   height: 5px;
   background: #444;
-  margin: 4px 0;
+  margin: 6px 0 4px;
 }
 
 .hotspot-bar-inner {
@@ -519,22 +639,30 @@ nav h2 {
 
 .hotspot-action {
   position: absolute;
-  top: 1px;
+  top: -6px;
   width: 12px;
   height: 12px;
   vertical-align: top;
-  box-shadow: 0px 0px 3px #000;
   cursor: pointer;
   padding: 1px;
   font-size: 8px;
-  line-height: 12px;
+  line-height: 13px;
   border-radius: 2px;
+  z-index: 1;
+}
+
+.hotspot .remove-hotspot-x,
+.hotspot .refresh-hotspot {
+  top: 6px;
+  box-shadow: 0px 0px 3px #000;
 }
 
 .hotspot .remove-hotspot-x {
-  left: -7px;
+  right: 9px;
   background: #9c1717;
   color: #eee;
+  line-height: 12px;
+  display: none;
 }
 
 .hotspot .remove-hotspot-x:hover {
@@ -543,21 +671,18 @@ nav h2 {
 
 .hotspot .drag-hotspot,
 .hotspot .refresh-hotspot {
-  background: #444;
+  color: #fff;
 }
 
 .hotspot .drag-hotspot {
-  right: -7px;
-  background: #4c4c4c;
-  color: #fff;
-  font-size: 11px;
+  left: 6px;
+  font-size: 19px;
   line-height: 12px;
   cursor: grab;
-}
-
-.hotspot .drag-hotspot:hover,
-.hotspot .refresh-hotspot:hover {
-  background: #666;
+  transform: rotate(90deg);
+  top: 50%;
+  margin-top: -14px;
+  display: none;
 }
 
 .hotspot.dragging,
@@ -567,18 +692,47 @@ nav h2 {
 
 .hotspot .refresh-hotspot {
   position: absolute;
-  right: -7px;
-  top: 20px;
-  width: 10px;
-  height: 10px;
+  left: 9px;
   padding: 2px;
+  display: none;
+  background: #414141;
+  width: 14px;
+  height: 14px;
+  box-sizing: border-box;
+}
+
+.hotspot .refresh-hotspot:hover {
+  opacity: 1;
+}
+
+.hotspot:hover {
+  color: #eab755;
+  background: #111;
+}
+
+.hotspot:hover .hotspot-image {
+  outline: 2px solid #fff;
+}
+
+.hotspot:hover .hotspot-label {
+  background: #222;
+}
+
+.hotspot:hover .hotspot-image {
+  opacity: 0.3;
+}
+
+.hotspot:hover .remove-hotspot-x,
+.hotspot:hover .refresh-hotspot,
+.hotspot:hover .drag-hotspot {
+  display: inline-block;
 }
 
 /**
 * Hotspot actions
 **/
 
-#hotspot-actions {
+#hotspot-achotspot-0tions {
   position: absolute;
   left: 115px;
   bottom: 10px;
@@ -590,6 +744,7 @@ nav h2 {
   border: 2px solid #ccc;
   display: none;
   margin-top: 8px;
+  background: #111;
 }
 
 #create-hotspot:hover {
@@ -847,12 +1002,15 @@ button {
   margin: 0 auto;
   font-size: 14px;
   font-weight: 600;
-  opacity: 0.4;
   transition: opacity .3s;
   cursor: pointer;
 }
 
-button.active {
+#enter-button {
+  opacity: 0.4;
+}
+
+#enter-button.active {
   opacity: 1;
 }
 
@@ -961,7 +1119,7 @@ noscript {
 
 #selected-image-target {
   position: absolute;
-  top: 60px;
+  top: 48px;
   right: 0;
   bottom: 0;
   left: 0;
@@ -1035,7 +1193,8 @@ noscript {
   white-space: initial;
 }
 
-.icons a {
+.icons a,
+.icons div {
   height: 32px;
   width: 32px;
   background: #cecbcb;
@@ -1048,6 +1207,36 @@ noscript {
 
 .icons img {
   width: 100%;
+}
+
+#pose-highlight-icon img {
+  opacity: 0.25;
+}
+
+#pose-highlight-icon.active img {
+  opacity: 1;
+}
+
+/**
+* Selected Image SVG
+**/
+
+#selected-image-svg {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  padding: 25px;
+  box-sizing: border-box;
+  z-index: 10;
+  background-color: #333;
+}
+
+#svg-image-unfiltered {
+  mask: url(#blur-mask);
 }
 
 /**
@@ -1157,13 +1346,14 @@ noscript {
   opacity: 1.0;
 }
 
-#select-tooltip {
+/**
+* Dismissable Tooltips
+**/
+
+.dismissible-tooltip {
   position: absolute;
-  left: -168px;
   z-index: 1;
   color: #fff;
-  bottom: 0px;
-  width: 126px;
   font-size: 12px;
   padding: 13px;
   border: 1px solid #717171;
@@ -1171,44 +1361,66 @@ noscript {
   border-radius: 3px;
 }
 
-#select-tooltip::before {
+.dismissible-tooltip#select-tooltip {
+  left: -168px;
+  bottom: 0px;
+  width: 126px;
+}
+
+.dismissible-tooltip#hotspots-tooltip {
+  left: 120px;
+  top: 100px;
+  width: 150px;
+}
+
+.dismissible-tooltip::before {
   content: '';
   width: 10px;
   height: 10px;
   transform: rotate(45deg);
   position: absolute;
-  right: -6px;
-  bottom: 14px;
   border-right: 1px solid #717171;
   border-top: 1px solid #717171;
 }
 
-#select-tooltip,
-#select-tooltip::before {
+.dismissible-tooltip#select-tooltip::before {
+  right: -6px;
+  bottom: 14px;
+}
+
+.dismissible-tooltip#hotspots-tooltip::before {
+  left: -6px;
+  top: 23px;
+  transform: rotate(225deg);
+}
+
+.dismissible-tooltip,
+.dismissible-tooltip::before {
   background: #222;
 }
 
-#select-tooltip-heading {
+.dismissible-tooltip b {
   font-weight: 800;
 }
 
-#select-tooltip p {
+.dismissible-tooltip p {
   line-height: 1.4em;
   margin: 5px 0;
 }
 
-#select-tooltip-button {
+.dismissible-tooltip button {
   display: inline-block;
-  border: 2px solid #F2C54A;
+  border: 1px solid #F2C54A;
   padding: 3px 20px;
   margin-top: 4px;
   border-radius: 3px;
   color: #F2C54A;
   font-weight: 800;
   cursor: pointer;
+  background: transparent;
 }
 
-#select-tooltip-button:hover {
+.dismissible-tooltip button:hover {
   background: #F2C54A;
   color: #222;
 }
@@ -1278,7 +1490,7 @@ noscript {
 
 #selected-images-modal {
   position: absolute;
-  top: 60px;
+  top: 48px;
   left: 0;
   right: 0;
   bottom: 0;
@@ -1425,6 +1637,8 @@ input[type=text] {
   border-radius: 3px;
   color: #333;
   opacity: 0.97;
+  position: absolute;
+  top: -10000px;
 }
 
 #tooltip::after {
