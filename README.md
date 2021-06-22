@@ -1,8 +1,11 @@
 # PixPlot
 
-This repository contains code that can be used to visualize tens of thousands of images in a two-dimensional projection within which similar images are clustered together. The image analysis uses Tensorflow's Inception bindings, and the visualization layer uses a custom WebGL viewer.
+This repository contains code that can be used to visualize tens of thousands of images in a two-dimensional projection within which similar images are clustered together. 
 
-![App preview](./pixplot/web/assets/images/preview.png?raw=true)
+This is a fork based off the Yale DHLab's [repo found here](https://github.com/YaleDHLab/pix-plot). Please refer to it for additional documentation of functionality we do not use.
+
+**NOTE**: To see more in depth setup documentation using our particular pipeline, please see the `Machine Learning Core | Platforms and Tools | Pixplot` page in Confluence.
+
 
 ## Dependencies
 
@@ -42,34 +45,6 @@ python -m SimpleHTTPServer 5000
 
 The visualization will then be available at `http://localhost:5000/output`.
 
-## Sample Data
-
-To acquire some sample data with which to build a plot, feel free to use some data prepared by Yale's DHLab:
-
-```bash
-pip install image_datasets
-```
-
-Then in a Python script:
-
-```python
-import image_datasets
-image_datasets.oslomini.download()
-```
-
-The `.download()` command will make a directory named `datasets` in your current working directory. That `datasets` directory will contain a subdirectory named 'oslomini', which contains a directory of images and another directory with a CSV file of image metadata. Using that data, we can next build a plot:
-
-```bash
-pixplot --images "datasets/oslomini/images/*" --metadata "datasets/oslomini/metadata/metadata.csv"
-```
-
-## Creating Massive Plots
-
-If you need to plot more than 100,000 images but don't have an expensive graphics card with which to visualize huge WebGL displays, you might want to specify a smaller "cell_size" parameter when building your plot. The "cell_size" argument controls how large each image is in the atlas files; smaller values require fewer textures to be rendered, which decreases the GPU RAM required to view a plot:
-
-```bash
-pixplot --images "path/to/images/*.jpg" --cell_size 10
-```
 
 ## Controlling UMAP Layout
 
@@ -119,65 +94,6 @@ The following column labels are accepted:
 | **permalink**    | a link to the image hosted on another domain            |
 | **year**         | a year timestamp for the image (should be an integer)   |
 | **label**        | a categorical label used for supervised UMAP projection |
-
-## IIIF Images
-
-If you would like to process images that are hosted on a IIIF server, you can specify a newline-delimited list of IIIF image manifests as the `--images` argument. For example, the following could be saved as `manifest.txt`:
-
-```bash
-https://manifests.britishart.yale.edu/manifest/40005
-https://manifests.britishart.yale.edu/manifest/40006
-https://manifests.britishart.yale.edu/manifest/40007
-https://manifests.britishart.yale.edu/manifest/40008
-https://manifests.britishart.yale.edu/manifest/40009
-```
-
-One could then specify these images as input by running `pixplot --images manifest.txt --n_clusters 2`
-
-## Plotting Poses
-
-In addition to the Inception-based image vectors, one can generate Mobilenet-based pose vectors for input images by installing an additional dependency:
-
-```bash
-pip install tf-pose==0.11.0
-```
-
-Then, when building a plot, one can pass the `--extract_poses` flag to the pixplot call:
-
-```bash
-pixplot --images "datasets/oslo/*.jpg" --extract_poses
-```
-
-## Demonstrations (Developed with PixPlot 2.0 codebase)
-
-| Link | Image Count | Collection Info | Browse Images | Download for PixPlot
-| ---------- | -------- | --------------- | ------------ | ------------ |
-| [NewsPlot: 1910-1912](http://pixplot.yale.edu/v2/loc/) | 24,026 | [George Grantham Bain Collection](https://www.loc.gov/pictures/collection/ggbain/) | [News in the 1910s](https://www.flickr.com/photos/library_of_congress/albums/72157603624867509/with/2163445674/) | [Images](http://pixplot.yale.edu/datasets/bain/photos.tar), [Metadata](http://pixplot.yale.edu/datasets/bain/metadata.csv) |
-| [Bildefelt i Oslo](http://pixplot.yale.edu/v2/oslo/) | 31,097 | [oslobilder](http://oslobilder.no) | [Advanced search, 1860-1924](http://oslobilder.no/search?advanced_search=1&query=&place=&from_year=1860&to_year=1924&id=&name=&title=&owner_filter=&producer=&depicted_person=&material=&technique=&event_desc=) | [Images](http://pixplot.yale.edu/datasets/oslo/photos.tar), [Metadata](http://pixplot.yale.edu/datasets/oslo/metadata.csv) |
-
-## Hosting on The AWS Server
-
-We have a dedicated AWS server at [http://pixplot.aireverie.xyz](http://pixplot.aireverie.xyz) to host our pixplot visualizations. The server is deliberately behind the AWS VPN, so in order to interact with it, you or anyone wishing to view the visualizations **will need to be connected to the VPN**.
-
-In order to host your pixplot on the AWS server, follow these steps:
-
-1. Run pixplot in the environment of your choice (e.g. datacenter)
-2. Copy the contents of your pixplot `output` folder to S3 at `s3://aireverie-inference-app/pixplot/<your_project>/<your_pixplot_name>`
-3. If necessary, download the `datascience.pem` access key from 1password
-4. Make sure you're logged into the AWS VPN
-5. `ssh` into the instance with `ssh -i <path/to/datascience.pem> ubuntu@pixplot.aireverie.xyz`
-6. Copy your output from S3 to the instance w/ `aws s3 sync s3://aireverie-inference-app/pixplot/<your_project>/<your_pixplot_name> ~/pixplot_outputs/<your_project>/<your_pixplot_name>`
-7. `cd ~/pixplot_outputs/<your_project>/<your_pixplot_name>`
-8. Run `ps -aux | grep http.server` and make note of the ports where pixplots are already running
-9. Choose an unused port and start your visualization w/ `nohup python3 -m http.server <your_chosen_port> &`
-10. Navigate to the visualization in your browser at `http://pixplot.aireverie.xyz:<your_chosen_port>`
-
->>> Performance Note: If you have high-resolution images and/or PNG's, the hosted version of pixplot may be laggy in the gallery view. One option to address this is to downscale your images to a web-appropriate resolution (e.g. 960x540) and/or save as JPEG's rather than PNG's. JPEG conversion would need to happen prior to Step 1 above b/c the pixplot source relies on your filenames. Downscaling could also happen prior to Step 1, or alternatively you could downscale the images in `output/data/originals` after running pixplot.
-
-If you wish to kill a running visualization:
-
-1. Run `ps -aux | grep "http.server <your_chosen_port>"` and make note of the pid (second column)
-2. Kill the process with `sudo kill -9 <your_pid>`
 
 ## Acknowledgements
 
